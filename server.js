@@ -76,17 +76,25 @@ app.post('/webhook', async (req, res) => {
 
 async function processUserMessage(phone, message) {
   try {
+    console.log(`🔄 Processing message from ${phone}: "${message}"`);
+    
     // 1. Obtener o crear usuario
     let user = await getOrCreateUser(phone);
+    console.log(`👤 User loaded: ${user.id}, onboarding_complete: ${user.onboarding_complete}`);
     
-    // 2. Si está en onboarding, manejar respuesta de onboarding
-    if (user.onboarding_step && user.onboarding_step !== 'complete') {
+    // 2. Si no completó onboarding, manejar respuesta de onboarding
+    if (!user.onboarding_complete) {
+      console.log(`🎓 Handling onboarding step: ${user.onboarding_step}`);
       await handleOnboarding(user, message);
       return;
     }
     
-    // 3. Clasificar intención con Claude (solo si onboarding completo)
+    console.log(`🤖 Classifying intent with Claude...`);
+    
+    // 3. Usuario completo - clasificar intención con Claude
     const intent = await classifyIntent(message, user);
+    
+    console.log(`🎯 Intent detected: ${intent.type}`);
     
     // 4. Ejecutar acción según intención
     switch(intent.type) {
@@ -110,6 +118,7 @@ async function processUserMessage(phone, message) {
     }
   } catch (error) {
     console.error('❌ Process error:', error);
+    console.error('❌ Stack:', error.stack);
     await sendWhatsApp(phone, 'Ups, tuve un problema. ¿Puedes intentar de nuevo? 🔧');
   }
 }
@@ -346,8 +355,8 @@ async function handleOnboarding(user, message) {
       
       // Guardar meta y completar onboarding
       await pool.query(
-        'UPDATE users SET savings_goal = $1, onboarding_step = $2, onboarding_complete = true WHERE id = $3',
-        [amount, 'complete', user.id]
+        'UPDATE users SET savings_goal = $1, onboarding_complete = true WHERE id = $2',
+        [amount, user.id]
       );
       
       const spendingBudget = income - amount;
@@ -549,8 +558,14 @@ async function handleTransaction(user, data) {
   }
   
   // Sistema de alertas inteligentes (solo para gastos, no ingresos)
+  // Solo si el usuario completó el onboarding
   if (!is_income && user.monthly_income && user.savings_goal) {
-    await checkFinancialHealth(user);
+    try {
+      await checkFinancialHealth(user);
+    } catch (error) {
+      console.error('❌ Error in checkFinancialHealth:', error);
+      // No romper el flujo si las alertas fallan
+    }
   }
 }
 
@@ -999,8 +1014,9 @@ async function getOrCreateUser(phone) {
   );
   
   if (result.rows.length === 0) {
+    // Usuario nuevo - crear con onboarding_complete = false
     result = await pool.query(
-      'INSERT INTO users (phone, onboarding_step) VALUES ($1, $2) RETURNING *',
+      'INSERT INTO users (phone, onboarding_complete, onboarding_step) VALUES ($1, false, $2) RETURNING *',
       [phone, 'awaiting_income']
     );
     
@@ -1015,6 +1031,29 @@ async function getOrCreateUser(phone) {
       '💰 ¿Cuál es tu ingreso mensual aproximado?\n' +
       '(Puedes responder en miles, ej: "800 lucas" o "$800000")'
     );
+  } else {
+    const user = result.rows[0];
+    
+    // Usuario existente sin onboarding completo - reiniciar si es necesario
+    if (!user.onboarding_complete) {
+      // Si no tiene onboarding_step, setear el inicial
+      if (!user.onboarding_step) {
+        await pool.query(
+          'UPDATE users SET onboarding_step = $1 WHERE id = $2',
+          ['awaiting_income', user.id]
+        );
+        result.rows[0].onboarding_step = 'awaiting_income';
+        
+        // Mensaje para iniciar onboarding
+        await sendWhatsApp(phone,
+          '👋 ¡Hola de nuevo!\n\n' +
+          'Para brindarte un mejor servicio como tu asesor financiero, ' +
+          'necesito conocer tu situación financiera.\n\n' +
+          '💰 ¿Cuál es tu ingreso mensual aproximado?\n' +
+          '(Puedes responder en miles, ej: "800 lucas" o "$800000")'
+        );
+      }
+    }
   }
   
   return result.rows[0];
