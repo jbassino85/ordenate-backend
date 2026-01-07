@@ -93,6 +93,9 @@ async function processUserMessage(phone, message) {
       case 'BUDGET':
         await handleBudget(user, intent.data);
         break;
+      case 'BUDGET_STATUS':
+        await handleBudgetStatus(user, intent.data);
+        break;
       default:
         await sendWhatsApp(phone, '🤔 No entendí tu mensaje. Puedes decir:\n\n💸 "Gasté $5000 en almuerzo"\n📊 "¿Cuánto gasté esta semana?"\n💰 "Quiero gastar máximo $100000 en comida"');
     }
@@ -146,7 +149,10 @@ CATEGORÍAS POSIBLES:
 3. BUDGET: Configurar presupuesto
    Ejemplos: "quiero gastar máximo 100 lucas en comida", "mi presupuesto de transporte es 50 mil"
    
-4. OTHER: Otro tipo
+4. BUDGET_STATUS: Consultar estado de presupuestos
+   Ejemplos: "¿cómo van mis presupuestos?", "estado de presupuestos", "resumen de presupuestos"
+   
+5. OTHER: Otro tipo
 
 MODISMOS CHILENOS:
 - "lucas/luca/lukas" = miles de pesos (ej: "5 lucas" = 5000)
@@ -170,7 +176,7 @@ REGLAS PARA EL CAMPO "description":
 FORMATO DE RESPUESTA:
 Responde SOLO con JSON válido (sin markdown, sin explicaciones):
 {
-  "type": "TRANSACTION|QUERY|BUDGET|OTHER",
+  "type": "TRANSACTION|QUERY|BUDGET|BUDGET_STATUS|OTHER",
   "data": {
     "amount": número_sin_símbolos,
     "category": "categoría",
@@ -192,7 +198,10 @@ EJEMPLOS DE QUERIES:
 - "gastos de comida" → {"type":"QUERY","data":{"category":"comida","detail":false}}
 - "detalle de comida de este mes" → {"type":"QUERY","data":{"period":"month","category":"comida","detail":true}}
 - "transacciones del mes pasado" → {"type":"QUERY","data":{"period":"last_month","detail":true}}
-- "resumen de transporte de la semana pasada" → {"type":"QUERY","data":{"period":"last_week","category":"transporte","detail":false}}`
+- "resumen de transporte de la semana pasada" → {"type":"QUERY","data":{"period":"last_week","category":"transporte","detail":false}}
+- "¿cómo van mis presupuestos?" → {"type":"BUDGET_STATUS","data":{}}
+- "estado de presupuestos" → {"type":"BUDGET_STATUS","data":{}}
+- "resumen de presupuestos" → {"type":"BUDGET_STATUS","data":{}}`
     },
     {
       type: "text",
@@ -471,6 +480,90 @@ async function handleBudget(user, data) {
   await sendWhatsApp(user.phone,
     `✅ Presupuesto configurado:\n\n📂 ${category}\n💰 $${Number(amount).toLocaleString('es-CL')} al mes\n\nTe avisaré cuando llegues al 80% y 100%`
   );
+}
+
+async function handleBudgetStatus(user, data) {
+  // Obtener todos los presupuestos del usuario
+  const budgetsResult = await pool.query(
+    `SELECT category, monthly_limit FROM budgets WHERE user_id = $1 ORDER BY category`,
+    [user.id]
+  );
+  
+  if (budgetsResult.rows.length === 0) {
+    await sendWhatsApp(user.phone, 
+      '📊 No tienes presupuestos configurados todavía.\n\nPuedes crear uno diciendo:\n"Quiero gastar máximo $100000 en comida"'
+    );
+    return;
+  }
+  
+  // Emojis por categoría
+  const categoryEmojis = {
+    comida: '🍕',
+    transporte: '🚗',
+    entretenimiento: '🎬',
+    salud: '⚕️',
+    servicios: '🔧',
+    compras: '🛍️',
+    hogar: '🏠',
+    educacion: '📚',
+    otros: '📦'
+  };
+  
+  // Obtener mes actual para el título
+  const months = ['enero', 'febrero', 'marzo', 'abril', 'mayo', 'junio', 
+                  'julio', 'agosto', 'septiembre', 'octubre', 'noviembre', 'diciembre'];
+  const currentMonth = months[new Date().getMonth()];
+  
+  let reply = `💰 Estado de tus presupuestos (${currentMonth}):\n\n`;
+  let totalBudget = 0;
+  let totalSpent = 0;
+  
+  // Para cada presupuesto, calcular gasto del mes
+  for (const budget of budgetsResult.rows) {
+    const limit = parseFloat(budget.monthly_limit);
+    totalBudget += limit;
+    
+    // Calcular gasto del mes actual en esta categoría
+    const spentResult = await pool.query(
+      `SELECT COALESCE(SUM(amount), 0) as total FROM transactions 
+       WHERE user_id = $1 AND category = $2 
+       AND date >= date_trunc('month', CURRENT_DATE)
+       AND is_income = false`,
+      [user.id, budget.category]
+    );
+    
+    const spent = parseFloat(spentResult.rows[0].total);
+    totalSpent += spent;
+    
+    const percentage = (spent / limit) * 100;
+    const available = limit - spent;
+    
+    const emoji = categoryEmojis[budget.category] || '📦';
+    const catName = budget.category.charAt(0).toUpperCase() + budget.category.slice(1);
+    
+    reply += `${emoji} ${catName}:\n`;
+    reply += `  Presupuesto: $${limit.toLocaleString('es-CL')}\n`;
+    reply += `  Gastado: $${spent.toLocaleString('es-CL')} (${percentage.toFixed(0)}%)`;
+    
+    // Agregar alertas visuales
+    if (percentage >= 100) {
+      reply += ' 🚨';
+    } else if (percentage >= 80) {
+      reply += ' ⚠️';
+    } else if (percentage >= 50) {
+      reply += ' 🟡';
+    } else {
+      reply += ' ✅';
+    }
+    
+    reply += `\n  Disponible: $${available.toLocaleString('es-CL')}\n\n`;
+  }
+  
+  reply += `━━━━━━━━━━━━━\n`;
+  reply += `Total presupuestado: $${totalBudget.toLocaleString('es-CL')}\n`;
+  reply += `Total gastado: $${totalSpent.toLocaleString('es-CL')} (${((totalSpent / totalBudget) * 100).toFixed(0)}%)`;
+  
+  await sendWhatsApp(user.phone, reply);
 }
 
 async function checkBudgetAlerts(user, category) {
