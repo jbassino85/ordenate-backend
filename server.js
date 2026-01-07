@@ -134,6 +134,16 @@ MODISMOS CHILENOS:
 CATEGORÍAS DE GASTOS:
 comida, transporte, entretenimiento, salud, servicios, compras, hogar, educacion, otros
 
+REGLAS PARA EL CAMPO "description":
+- Capitalizar primera letra del comercio/lugar
+- NO incluir prefijos como "gasto en", "Gasto en", "compra en"
+- Solo el nombre del lugar capitalizado
+- Ejemplos correctos:
+  * Input: "gasté en uber" → Output description: "Uber"
+  * Input: "gaste 5000 en mcdonald's" → Output description: "McDonald's"
+  * Input: "compre en walmart" → Output description: "Walmart"
+  * Input: "almuerzo" → Output description: "Almuerzo"
+
 FORMATO DE RESPUESTA:
 Responde SOLO con JSON válido (sin markdown, sin explicaciones):
 {
@@ -209,8 +219,8 @@ async function handleTransaction(user, data) {
   
   await sendWhatsApp(user.phone, reply);
   
-  // Verificar alertas premium
-  if (user.plan === 'premium' && category) {
+  // Verificar alertas de presupuesto
+  if (category) {
     await checkBudgetAlerts(user, category);
   }
 }
@@ -287,11 +297,12 @@ async function handleQuery(user, data) {
   
   await sendWhatsApp(user.phone, reply);
   
-  // Sugerir upgrade si es free
+  // NOTA: Este mensaje de upgrade solo se muestra en queries (consultas de gastos)
+  // TODO: Personalizar mensaje según contexto cuando hagamos split free/premium
   if (user.plan === 'free') {
     setTimeout(async () => {
       await sendWhatsApp(user.phone, 
-        '💎 ¿Quieres ver gráficos y análisis detallados?\n\nUpgrade a Premium por $10/mes\nEscribe "premium" para más info'
+        '💎 ¿Quieres ver gráficos y análisis detallados?\n\nUpgrade a Premium por $9.990/mes\nEscribe "premium" para más info!'
       );
     }, 2000);
   }
