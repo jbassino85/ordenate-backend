@@ -82,8 +82,28 @@ async function processUserMessage(phone, message) {
     let user = await getOrCreateUser(phone);
     console.log(`👤 User loaded: ${user.id}, onboarding_complete: ${user.onboarding_complete}`);
     
-    // 2. Si no completó onboarding, manejar respuesta de onboarding
+    // 2. Si no completó onboarding
     if (!user.onboarding_complete) {
+      
+      // Si está en awaiting_income, enviar pregunta inicial (NO procesar mensaje)
+      if (user.onboarding_step === 'awaiting_income') {
+        await sendWhatsApp(phone,
+          '👋 ¡Hola! Bienvenido a Ordénate!\n\n' +
+          'Para brindarte un mejor servicio como tu asesor financiero, ' +
+          'necesito conocer tu situación financiera.\n\n' +
+          '💰 ¿Cuál es tu ingreso mensual aproximado?\n' +
+          '(Puedes responder en miles, ej: "800 lucas" o "$800000")'
+        );
+        
+        // Cambiar step para que próximo mensaje se procese
+        await pool.query(
+          'UPDATE users SET onboarding_step = $1 WHERE id = $2',
+          ['responding_income', user.id]
+        );
+        return;
+      }
+      
+      // Para otros steps, procesar respuesta
       console.log(`🎓 Handling onboarding step: ${user.onboarding_step}`);
       await handleOnboarding(user, message);
       return;
@@ -114,7 +134,13 @@ async function processUserMessage(phone, message) {
         await handleFinancialAdvice(user, intent.data, message);
         break;
       default:
-        await sendWhatsApp(phone, '🤔 No entendí tu mensaje. Puedes decir:\n\n💸 "Gasté $5000 en almuerzo"\n📊 "¿Cuánto gasté esta semana?"\n💰 "Quiero gastar máximo $100000 en comida"\n💡 "¿Cómo puedo ahorrar más?"');
+        await sendWhatsApp(phone, 
+          '🤔 No entendí tu mensaje. Puedes decir:\n\n' +
+          '💸 "Gasté $5000 en almuerzo"\n' +
+          '📊 "¿Cuánto gasté esta semana?"\n' +
+          '💰 "Quiero gastar máximo $100000 en comida"\n' +
+          '💡 "¿Cómo puedo ahorrar más?"'
+        );
     }
   } catch (error) {
     console.error('❌ Process error:', error);
@@ -307,7 +333,7 @@ async function handleOnboarding(user, message) {
   const amount = extractAmount(message);
   
   switch(user.onboarding_step) {
-    case 'awaiting_income':
+    case 'responding_income':
       if (!amount || amount < 50000) {
         await sendWhatsApp(user.phone, 
           '🤔 No detecté un monto válido.\n\n' +
@@ -1019,38 +1045,16 @@ async function getOrCreateUser(phone) {
       'INSERT INTO users (phone, onboarding_complete, onboarding_step) VALUES ($1, false, $2) RETURNING *',
       [phone, 'awaiting_income']
     );
-    
-    // Mensaje de bienvenida - Inicio de onboarding
-    await sendWhatsApp(phone,
-      '👋 ¡Hola! Soy Ordenate, tu asesor financiero personal.\n\n' +
-      'Te ayudaré a:\n' +
-      '✅ Controlar tus gastos\n' +
-      '✅ Alcanzar tus metas de ahorro\n' +
-      '✅ Tomar mejores decisiones financieras\n\n' +
-      'Para empezar, necesito conocerte un poco...\n\n' +
-      '💰 ¿Cuál es tu ingreso mensual aproximado?\n' +
-      '(Puedes responder en miles, ej: "800 lucas" o "$800000")'
-    );
   } else {
     const user = result.rows[0];
     
-    // Usuario existente sin onboarding completo
-    if (!user.onboarding_complete) {
-      // SIEMPRE resetear onboarding_step a 'awaiting_income' para usuarios sin completar
+    // Usuario existente sin onboarding completo - asegurar que tenga onboarding_step
+    if (!user.onboarding_complete && !user.onboarding_step) {
       await pool.query(
         'UPDATE users SET onboarding_step = $1 WHERE id = $2',
         ['awaiting_income', user.id]
       );
       result.rows[0].onboarding_step = 'awaiting_income';
-      
-      // Mensaje para iniciar onboarding
-      await sendWhatsApp(phone,
-        '👋 ¡Hola de nuevo!\n\n' +
-        'Para brindarte un mejor servicio como tu asesor financiero, ' +
-        'necesito conocer tu situación financiera.\n\n' +
-        '💰 ¿Cuál es tu ingreso mensual aproximado?\n' +
-        '(Puedes responder en miles, ej: "800 lucas" o "$800000")'
-      );
     }
   }
   
