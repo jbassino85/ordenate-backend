@@ -146,7 +146,7 @@ RESPONDE SOLO CON JSON (sin markdown, sin explicaciones):
 
   try {
     const response = await anthropic.messages.create({
-      model: "claude-haiku-4-20250514",
+      model: "claude-haiku-4-5-20251001",
       max_tokens: 500,
       messages: [{
         role: "user",
@@ -362,17 +362,25 @@ async function getOrCreateUser(phone) {
 
 async function sendWhatsApp(to, message) {
   try {
-    // Asegurar formato correcto
-    const phoneNumber = to.startsWith('+') ? to : `+${to}`;
+    // Limpiar formato del número del destinatario
+    let cleanPhone = to.replace('whatsapp:', '').replace('+', '');
+    if (!cleanPhone.startsWith('56')) {
+      cleanPhone = '56' + cleanPhone.replace(/^0+/, '');
+    }
+    const toNumber = `whatsapp:+${cleanPhone}`;
+    
+    // Número de Twilio (ya incluye whatsapp: en la variable)
     const fromNumber = process.env.TWILIO_WHATSAPP_NUMBER;
+    
+    console.log(`📤 Enviando a ${toNumber} desde ${fromNumber}`);
     
     await twilioClient.messages.create({
       body: message,
       from: fromNumber,
-      to: `whatsapp:${phoneNumber}`
+      to: toNumber
     });
     
-    console.log(`✅ Mensaje enviado a ${phoneNumber}`);
+    console.log(`✅ Mensaje enviado a ${toNumber}`);
   } catch (error) {
     console.error('❌ Twilio error:', error);
   }
