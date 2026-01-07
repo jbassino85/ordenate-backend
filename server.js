@@ -122,6 +122,7 @@ CATEGORÍAS POSIBLES:
    
    Períodos válidos:
    - "today": hoy
+   - "yesterday": ayer
    - "week": esta semana
    - "month": este mes
    - "year": este año
@@ -173,16 +174,18 @@ Responde SOLO con JSON válido (sin markdown, sin explicaciones):
     "category": "categoría",
     "description": "texto",
     "is_income": true/false,
-    "period": "today|week|month|year|last_week|last_month",
+    "period": "today|yesterday|week|month|year|last_week|last_month",
     "detail": true/false (solo para QUERY: true si pide desglose, false para resumen)
   }
 }
 
 EJEMPLOS DE QUERIES:
 - "¿cuánto gasté hoy?" → {"type":"QUERY","data":{"period":"today","detail":false}}
+- "¿cuánto gasté ayer?" → {"type":"QUERY","data":{"period":"yesterday","detail":false}}
 - "detalle de este mes" → {"type":"QUERY","data":{"period":"month","detail":true}}
 - "gastos de comida" → {"type":"QUERY","data":{"category":"comida","detail":false}}
 - "detalle de comida de este mes" → {"type":"QUERY","data":{"period":"month","category":"comida","detail":true}}
+- "detalle de comida de ayer" → {"type":"QUERY","data":{"period":"yesterday","category":"comida","detail":true}}
 - "transacciones del mes pasado" → {"type":"QUERY","data":{"period":"last_month","detail":true}}
 - "resumen de transporte de la semana pasada" → {"type":"QUERY","data":{"period":"last_week","category":"transporte","detail":false}}`
     },
@@ -261,6 +264,14 @@ async function handleQuery(user, data) {
   let periodText = 'hoy';
   
   switch(period) {
+    case 'today':
+      dateFilter = 'date = CURRENT_DATE';
+      periodText = 'hoy';
+      break;
+    case 'yesterday':
+      dateFilter = 'date = CURRENT_DATE - INTERVAL \'1 day\'';
+      periodText = 'ayer';
+      break;
     case 'week':
       dateFilter = "date >= date_trunc('week', CURRENT_DATE)";
       periodText = 'esta semana';
