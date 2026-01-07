@@ -155,6 +155,8 @@ Responde SOLO con JSON válido (sin markdown, sin explicaciones):
   ];
 
   try {
+    console.log(`🤖 Calling Claude with prompt caching...`);
+    
     const response = await anthropic.messages.create({
       model: "claude-haiku-4-5-20251001",
       max_tokens: 500,
@@ -166,6 +168,8 @@ Responde SOLO con JSON válido (sin markdown, sin explicaciones):
     });
     
     // Log cache performance
+    console.log(`📊 Usage stats:`, JSON.stringify(response.usage));
+    
     const usage = response.usage;
     if (usage.cache_creation_input_tokens) {
       console.log(`💾 Cache created: ${usage.cache_creation_input_tokens} tokens`);
