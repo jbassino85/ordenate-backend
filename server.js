@@ -120,6 +120,26 @@ CATEGORÍAS POSIBLES:
 2. QUERY: Consultar información
    Ejemplos: "¿cuánto gasté esta semana?", "mostrar mis gastos"
    
+   Períodos válidos:
+   - "today": hoy
+   - "week": esta semana
+   - "month": este mes
+   - "year": este año
+   - "last_week": semana pasada
+   - "last_month": mes pasado
+   
+   Sub-tipos:
+   - QUERY_SUMMARY: Resumen agregado por categoría (default)
+   - QUERY_DETAIL: Desglose detallado de cada transacción
+     Palabras clave: "detalle", "desglose", "cada gasto", "transacciones", "lista completa"
+   
+   Puede combinar: período + categoría + detalle
+   Ejemplos:
+   - "detalle de este mes" → period: "month", detail: true
+   - "detalle de comida" → category: "comida", detail: true  
+   - "detalle de comida de este mes" → period: "month", category: "comida", detail: true
+   - "gastos de transporte del mes pasado" → period: "last_month", category: "transporte"
+   
 3. BUDGET: Configurar presupuesto
    Ejemplos: "quiero gastar máximo 100 lucas en comida", "mi presupuesto de transporte es 50 mil"
    
@@ -153,9 +173,18 @@ Responde SOLO con JSON válido (sin markdown, sin explicaciones):
     "category": "categoría",
     "description": "texto",
     "is_income": true/false,
-    "period": "today|week|month|year"
+    "period": "today|week|month|year|last_week|last_month",
+    "detail": true/false (solo para QUERY: true si pide desglose, false para resumen)
   }
-}`
+}
+
+EJEMPLOS DE QUERIES:
+- "¿cuánto gasté hoy?" → {"type":"QUERY","data":{"period":"today","detail":false}}
+- "detalle de este mes" → {"type":"QUERY","data":{"period":"month","detail":true}}
+- "gastos de comida" → {"type":"QUERY","data":{"category":"comida","detail":false}}
+- "detalle de comida de este mes" → {"type":"QUERY","data":{"period":"month","category":"comida","detail":true}}
+- "transacciones del mes pasado" → {"type":"QUERY","data":{"period":"last_month","detail":true}}
+- "resumen de transporte de la semana pasada" → {"type":"QUERY","data":{"period":"last_week","category":"transporte","detail":false}}`
     },
     {
       type: "text",
@@ -226,7 +255,7 @@ async function handleTransaction(user, data) {
 }
 
 async function handleQuery(user, data) {
-  const { period, category } = data;
+  const { period, category, detail } = data;
   
   let dateFilter = 'date >= CURRENT_DATE';
   let periodText = 'hoy';
@@ -244,8 +273,104 @@ async function handleQuery(user, data) {
       dateFilter = "date >= date_trunc('year', CURRENT_DATE)";
       periodText = 'este año';
       break;
+    case 'last_week':
+      dateFilter = "date >= date_trunc('week', CURRENT_DATE - INTERVAL '1 week') AND date < date_trunc('week', CURRENT_DATE)";
+      periodText = 'la semana pasada';
+      break;
+    case 'last_month':
+      dateFilter = "date >= date_trunc('month', CURRENT_DATE - INTERVAL '1 month') AND date < date_trunc('month', CURRENT_DATE)";
+      periodText = 'el mes pasado';
+      break;
   }
   
+  // Si pide detalle, mostrar transacciones individuales
+  if (detail) {
+    let query = `
+      SELECT category, description, amount, date, is_income
+      FROM transactions
+      WHERE user_id = $1 AND ${dateFilter}
+    `;
+    
+    if (category) {
+      query += ` AND category = $2`;
+    }
+    
+    query += ' ORDER BY category, date DESC';
+    
+    const result = await pool.query(
+      query,
+      category ? [user.id, category] : [user.id]
+    );
+    
+    if (result.rows.length === 0) {
+      const catText = category ? ` en ${category}` : '';
+      await sendWhatsApp(user.phone, `No tienes gastos registrados${catText} ${periodText} 📊`);
+      return;
+    }
+    
+    // Agrupar por categoría
+    const byCategory = {};
+    let totalExpenses = 0;
+    let totalIncome = 0;
+    
+    result.rows.forEach(row => {
+      if (!byCategory[row.category]) {
+        byCategory[row.category] = [];
+      }
+      byCategory[row.category].push(row);
+      
+      if (row.is_income) {
+        totalIncome += parseFloat(row.amount);
+      } else {
+        totalExpenses += parseFloat(row.amount);
+      }
+    });
+    
+    // Emojis por categoría
+    const categoryEmojis = {
+      comida: '🍕',
+      transporte: '🚗',
+      entretenimiento: '🎬',
+      salud: '⚕️',
+      servicios: '🔧',
+      compras: '🛍️',
+      hogar: '🏠',
+      educacion: '📚',
+      otros: '📦'
+    };
+    
+    const catText = category ? ` - ${category.charAt(0).toUpperCase() + category.slice(1)}` : '';
+    let reply = `📊 Detalle ${periodText}${catText}:\n\n`;
+    
+    // Mostrar cada categoría con sus transacciones
+    Object.keys(byCategory).sort().forEach(cat => {
+      const emoji = categoryEmojis[cat] || '💸';
+      const catTotal = byCategory[cat].reduce((sum, t) => sum + parseFloat(t.amount), 0);
+      
+      reply += `${emoji} ${cat.charAt(0).toUpperCase() + cat.slice(1)}:\n`;
+      
+      byCategory[cat].forEach(transaction => {
+        const date = new Date(transaction.date);
+        const dateStr = `${String(date.getDate()).padStart(2, '0')}/${String(date.getMonth() + 1).padStart(2, '0')}`;
+        reply += `  • ${transaction.description || 'Sin descripción'}: $${Number(transaction.amount).toLocaleString('es-CL')} (${dateStr})\n`;
+      });
+      
+      reply += `  Total: $${catTotal.toLocaleString('es-CL')}\n\n`;
+    });
+    
+    reply += `━━━━━━━━━━━━━\n`;
+    reply += `Total gastado: $${totalExpenses.toLocaleString('es-CL')}`;
+    
+    if (totalIncome > 0) {
+      reply += `\nTotal ingresos: $${totalIncome.toLocaleString('es-CL')}`;
+      reply += `\nBalance: $${(totalIncome - totalExpenses).toLocaleString('es-CL')}`;
+    }
+    
+    await sendWhatsApp(user.phone, reply);
+    return;
+  }
+  
+  // Modo resumen (agregado por categoría) - código existente
   let query = `
     SELECT 
       category,
@@ -267,11 +392,13 @@ async function handleQuery(user, data) {
   );
   
   if (result.rows.length === 0) {
-    await sendWhatsApp(user.phone, `No tienes gastos registrados ${periodText} 📊`);
+    const catText = category ? ` en ${category}` : '';
+    await sendWhatsApp(user.phone, `No tienes gastos registrados${catText} ${periodText} 📊`);
     return;
   }
   
-  let reply = `📊 Resumen ${periodText}:\n\n`;
+  const catText = category ? ` - ${category.charAt(0).toUpperCase() + category.slice(1)}` : '';
+  let reply = `📊 Resumen ${periodText}${catText}:\n\n`;
   
   let totalExpenses = 0;
   let totalIncome = 0;
@@ -302,7 +429,7 @@ async function handleQuery(user, data) {
   if (user.plan === 'free') {
     setTimeout(async () => {
       await sendWhatsApp(user.phone, 
-        '💎 ¿Quieres ver gráficos y análisis detallados?\n\nUpgrade a Premium por $9.990/mes\nEscribe "premium" para más info!'
+        '💎 ¿Quieres ver gráficos y análisis detallados?\n\nUpgrade a Premium por $10/mes\nEscribe "premium" para más info'
       );
     }, 2000);
   }
