@@ -1034,25 +1034,23 @@ async function getOrCreateUser(phone) {
   } else {
     const user = result.rows[0];
     
-    // Usuario existente sin onboarding completo - reiniciar si es necesario
+    // Usuario existente sin onboarding completo
     if (!user.onboarding_complete) {
-      // Si no tiene onboarding_step, setear el inicial
-      if (!user.onboarding_step) {
-        await pool.query(
-          'UPDATE users SET onboarding_step = $1 WHERE id = $2',
-          ['awaiting_income', user.id]
-        );
-        result.rows[0].onboarding_step = 'awaiting_income';
-        
-        // Mensaje para iniciar onboarding
-        await sendWhatsApp(phone,
-          '👋 ¡Hola de nuevo!\n\n' +
-          'Para brindarte un mejor servicio como tu asesor financiero, ' +
-          'necesito conocer tu situación financiera.\n\n' +
-          '💰 ¿Cuál es tu ingreso mensual aproximado?\n' +
-          '(Puedes responder en miles, ej: "800 lucas" o "$800000")'
-        );
-      }
+      // SIEMPRE resetear onboarding_step a 'awaiting_income' para usuarios sin completar
+      await pool.query(
+        'UPDATE users SET onboarding_step = $1 WHERE id = $2',
+        ['awaiting_income', user.id]
+      );
+      result.rows[0].onboarding_step = 'awaiting_income';
+      
+      // Mensaje para iniciar onboarding
+      await sendWhatsApp(phone,
+        '👋 ¡Hola de nuevo!\n\n' +
+        'Para brindarte un mejor servicio como tu asesor financiero, ' +
+        'necesito conocer tu situación financiera.\n\n' +
+        '💰 ¿Cuál es tu ingreso mensual aproximado?\n' +
+        '(Puedes responder en miles, ej: "800 lucas" o "$800000")'
+      );
     }
   }
   
