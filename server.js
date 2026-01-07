@@ -122,12 +122,14 @@ CATEGORÍAS POSIBLES:
    
    Períodos válidos:
    - "today": hoy
-   - "yesterday": ayer
+   - "yesterday": ayer (palabras clave: "ayer")
    - "week": esta semana
    - "month": este mes
    - "year": este año
    - "last_week": semana pasada
    - "last_month": mes pasado
+   
+   IMPORTANTE: Cuando el usuario dice "ayer", usar period: "yesterday", NO "today"
    
    Sub-tipos:
    - QUERY_SUMMARY: Resumen agregado por categoría (default)
@@ -182,10 +184,13 @@ Responde SOLO con JSON válido (sin markdown, sin explicaciones):
 EJEMPLOS DE QUERIES:
 - "¿cuánto gasté hoy?" → {"type":"QUERY","data":{"period":"today","detail":false}}
 - "¿cuánto gasté ayer?" → {"type":"QUERY","data":{"period":"yesterday","detail":false}}
+- "gastos de ayer" → {"type":"QUERY","data":{"period":"yesterday","detail":false}}
+- "detalle de ayer" → {"type":"QUERY","data":{"period":"yesterday","detail":true}}
+- "detalle de comida de ayer" → {"type":"QUERY","data":{"period":"yesterday","category":"comida","detail":true}}
+- "cuanto gaste en transporte ayer" → {"type":"QUERY","data":{"period":"yesterday","category":"transporte","detail":false}}
 - "detalle de este mes" → {"type":"QUERY","data":{"period":"month","detail":true}}
 - "gastos de comida" → {"type":"QUERY","data":{"category":"comida","detail":false}}
 - "detalle de comida de este mes" → {"type":"QUERY","data":{"period":"month","category":"comida","detail":true}}
-- "detalle de comida de ayer" → {"type":"QUERY","data":{"period":"yesterday","category":"comida","detail":true}}
 - "transacciones del mes pasado" → {"type":"QUERY","data":{"period":"last_month","detail":true}}
 - "resumen de transporte de la semana pasada" → {"type":"QUERY","data":{"period":"last_week","category":"transporte","detail":false}}`
     },
