@@ -103,13 +103,15 @@ async function processUserMessage(phone, message) {
 }
 
 // ============================================
-// CLASIFICACIÓN CON CLAUDE
+// CLASIFICACIÓN CON CLAUDE (CON PROMPT CACHING)
 // ============================================
 
 async function classifyIntent(message, user) {
-  const prompt = `Eres un asistente de finanzas personal en Chile. Analiza este mensaje y clasifica su intención.
-
-Mensaje del usuario: "${message}"
+  // System instructions (CACHED - Se reutilizan entre llamadas)
+  const systemInstructions = [
+    {
+      type: "text",
+      text: `Eres un asistente de finanzas personal en Chile. Analiza mensajes de usuarios y clasifica su intención.
 
 CATEGORÍAS POSIBLES:
 1. TRANSACTION: Registrar gasto/ingreso
@@ -132,7 +134,8 @@ MODISMOS CHILENOS:
 CATEGORÍAS DE GASTOS:
 comida, transporte, entretenimiento, salud, servicios, compras, hogar, educacion, otros
 
-RESPONDE SOLO CON JSON (sin markdown, sin explicaciones):
+FORMATO DE RESPUESTA:
+Responde SOLO con JSON válido (sin markdown, sin explicaciones):
 {
   "type": "TRANSACTION|QUERY|BUDGET|OTHER",
   "data": {
@@ -142,17 +145,34 @@ RESPONDE SOLO CON JSON (sin markdown, sin explicaciones):
     "is_income": true/false,
     "period": "today|week|month|year"
   }
-}`;
+}`
+    },
+    {
+      type: "text",
+      text: "Analiza el siguiente mensaje del usuario y responde con el JSON de clasificación:",
+      cache_control: { type: "ephemeral" }
+    }
+  ];
 
   try {
     const response = await anthropic.messages.create({
       model: "claude-haiku-4-5-20251001",
       max_tokens: 500,
+      system: systemInstructions,
       messages: [{
         role: "user",
-        content: prompt
+        content: message
       }]
     });
+    
+    // Log cache performance
+    const usage = response.usage;
+    if (usage.cache_creation_input_tokens) {
+      console.log(`💾 Cache created: ${usage.cache_creation_input_tokens} tokens`);
+    }
+    if (usage.cache_read_input_tokens) {
+      console.log(`⚡ Cache hit: ${usage.cache_read_input_tokens} tokens (saved ~$${(usage.cache_read_input_tokens * 0.0000009).toFixed(4)})`);
+    }
     
     const jsonText = response.content[0].text.trim();
     const cleaned = jsonText.replace(/```json|```/g, '').trim();
@@ -394,4 +414,5 @@ const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log(`🚀 Ordenate Backend running on port ${PORT}`);
   console.log(`📱 Twilio webhook ready at /webhook`);
+  console.log(`💾 Prompt caching enabled (90% cost savings)`);
 });
