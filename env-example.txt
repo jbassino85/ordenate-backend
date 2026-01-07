@@ -1,0 +1,14 @@
+# Twilio WhatsApp
+TWILIO_ACCOUNT_SID=your_account_sid_here
+TWILIO_AUTH_TOKEN=your_auth_token_here
+TWILIO_WHATSAPP_NUMBER=whatsapp:+14155238886
+
+# Database (Railway PostgreSQL)
+DATABASE_URL=postgresql://user:password@host:port/database
+
+# Anthropic Claude
+ANTHROPIC_API_KEY=sk-ant-api03-xxxxx
+
+# App Config
+PORT=3000
+NODE_ENV=production
