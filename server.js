@@ -85,7 +85,7 @@ async function processUserMessage(phone, message) {
     // 2. Si no completó onboarding
     if (!user.onboarding_complete) {
       
-      // Si está en awaiting_income, enviar pregunta inicial (NO procesar mensaje)
+      // Si está en awaiting_income, enviar pregunta inicial
       if (user.onboarding_step === 'awaiting_income') {
         await sendWhatsApp(phone,
           '👋 ¡Hola! Bienvenido a Ordénate!\n\n' +
@@ -95,15 +95,17 @@ async function processUserMessage(phone, message) {
           '(Puedes responder en miles, ej: "800 lucas" o "$800000")'
         );
         
-        // Cambiar step para que próximo mensaje se procese
+        // Cambiar step para que próximo mensaje se procese como respuesta
+        console.log(`🔄 Updating onboarding_step to awaiting_income_response...`);
         await pool.query(
           'UPDATE users SET onboarding_step = $1 WHERE id = $2',
-          ['responding_income', user.id]
+          ['awaiting_income_response', user.id]
         );
+        console.log(`✅ Step updated successfully`);
         return;
       }
       
-      // Para otros steps, procesar respuesta
+      // Procesar respuesta de onboarding
       console.log(`🎓 Handling onboarding step: ${user.onboarding_step}`);
       await handleOnboarding(user, message);
       return;
@@ -333,7 +335,7 @@ async function handleOnboarding(user, message) {
   const amount = extractAmount(message);
   
   switch(user.onboarding_step) {
-    case 'responding_income':
+    case 'awaiting_income_response':
       if (!amount || amount < 50000) {
         await sendWhatsApp(user.phone, 
           '🤔 No detecté un monto válido.\n\n' +
