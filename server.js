@@ -1050,13 +1050,16 @@ async function getOrCreateUser(phone) {
   } else {
     const user = result.rows[0];
     
-    // Usuario existente sin onboarding completo - asegurar que tenga onboarding_step
-    if (!user.onboarding_complete && !user.onboarding_step) {
-      await pool.query(
-        'UPDATE users SET onboarding_step = $1 WHERE id = $2',
-        ['awaiting_income', user.id]
-      );
-      result.rows[0].onboarding_step = 'awaiting_income';
+    // Usuario existente sin onboarding completo - asegurar que tenga onboarding_step correcto
+    if (!user.onboarding_complete) {
+      // Si no tiene onboarding_step o tiene un valor viejo, resetear a awaiting_income
+      if (!user.onboarding_step || !['awaiting_income', 'awaiting_income_response', 'awaiting_savings_goal'].includes(user.onboarding_step)) {
+        await pool.query(
+          'UPDATE users SET onboarding_step = $1 WHERE id = $2',
+          ['awaiting_income', user.id]
+        );
+        result.rows[0].onboarding_step = 'awaiting_income';
+      }
     }
   }
   
