@@ -80,12 +80,13 @@ async function processUserMessage(phone, message) {
     
     // 1. Obtener o crear usuario
     let user = await getOrCreateUser(phone);
-    console.log(`👤 User loaded: ${user.id}, onboarding_complete: ${user.onboarding_complete}`);
+    console.log(`👤 User loaded: id=${user.id}, onboarding_complete=${user.onboarding_complete}, onboarding_step="${user.onboarding_step}"`);
     
     // 2. Si no completó onboarding
     if (!user.onboarding_complete) {
       
       // Si está en awaiting_income, enviar pregunta inicial
+      console.log(`🔍 Checking: user.onboarding_step="${user.onboarding_step}" === "awaiting_income" ? ${user.onboarding_step === 'awaiting_income'}`);
       if (user.onboarding_step === 'awaiting_income') {
         await sendWhatsApp(phone,
           '👋 ¡Hola! Bienvenido a Ordénate!\n\n' +
