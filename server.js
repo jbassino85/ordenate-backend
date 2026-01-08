@@ -52,6 +52,30 @@ app.get('/', (req, res) => {
   });
 });
 
+// Admin: Reset user onboarding
+app.get('/admin/reset-user/:phone', async (req, res) => {
+  try {
+    const phone = req.params.phone;
+    
+    const result = await pool.query(
+      'UPDATE users SET onboarding_step = $1 WHERE phone = $2 RETURNING *',
+      ['awaiting_income', phone]
+    );
+    
+    if (result.rows.length === 0) {
+      res.json({ error: 'User not found' });
+    } else {
+      res.json({ 
+        success: true, 
+        user: result.rows[0],
+        message: 'User reset to awaiting_income'
+      });
+    }
+  } catch (error) {
+    res.json({ error: error.message });
+  }
+});
+
 // Twilio webhook (recibir mensajes)
 app.post('/webhook', async (req, res) => {
   try {
@@ -311,13 +335,20 @@ function extractAmount(text) {
     .replace(/\./g, '')
     .replace(/,/g, '');
   
+  // Casos de texto comunes
+  if (cleaned.match(/\b(un|1)\s*millon\b/)) return 1000000;
+  if (cleaned.match(/\b(dos|2)\s*millones?\b/)) return 2000000;
+  if (cleaned.match(/\b(tres|3)\s*millones?\b/)) return 3000000;
+  if (cleaned.match(/\bmedio\s*millon\b/)) return 500000;
+  if (cleaned.match(/\b(una|1)\s*(luca|lucas)\b/)) return 1000;
+  
   // Buscar número seguido de "lucas", "luca", "mil", "k"
   let match = cleaned.match(/(\d+)\s*(lucas|luca|lukas|mil|k)/);
   if (match) {
     return parseInt(match[1]) * 1000;
   }
   
-  // Buscar "palo" (millón)
+  // Buscar "palo" o "millón" con número
   match = cleaned.match(/(\d+)\s*(palo|palos|millon|millones)/);
   if (match) {
     return parseInt(match[1]) * 1000000;
