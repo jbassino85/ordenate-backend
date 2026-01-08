@@ -1036,33 +1036,48 @@ async function checkBudgetAlerts(user, category) {
 // ============================================
 
 async function getOrCreateUser(phone) {
+  console.log(`📞 getOrCreateUser called for ${phone}`);
+  
   let result = await pool.query(
     'SELECT * FROM users WHERE phone = $1',
     [phone]
   );
   
+  console.log(`✅ Query completed, found ${result.rows.length} users`);
+  
   if (result.rows.length === 0) {
+    console.log(`➕ Creating new user...`);
     // Usuario nuevo - crear con onboarding_complete = false
     result = await pool.query(
       'INSERT INTO users (phone, onboarding_complete, onboarding_step) VALUES ($1, false, $2) RETURNING *',
       [phone, 'awaiting_income']
     );
+    console.log(`✅ User created with id: ${result.rows[0].id}`);
   } else {
     const user = result.rows[0];
+    console.log(`👤 Existing user found: id=${user.id}, onboarding_complete=${user.onboarding_complete}, step=${user.onboarding_step}`);
     
     // Usuario existente sin onboarding completo - asegurar que tenga onboarding_step correcto
     if (!user.onboarding_complete) {
+      console.log(`🔄 User needs onboarding, checking step...`);
       // Si no tiene onboarding_step o tiene un valor viejo, resetear a awaiting_income
       if (!user.onboarding_step || !['awaiting_income', 'awaiting_income_response', 'awaiting_savings_goal'].includes(user.onboarding_step)) {
+        console.log(`🔧 Resetting onboarding_step to awaiting_income...`);
         await pool.query(
           'UPDATE users SET onboarding_step = $1 WHERE id = $2',
           ['awaiting_income', user.id]
         );
         result.rows[0].onboarding_step = 'awaiting_income';
+        console.log(`✅ Step reset complete`);
+      } else {
+        console.log(`✅ Step is valid: ${user.onboarding_step}`);
       }
+    } else {
+      console.log(`✅ User already completed onboarding`);
     }
   }
   
+  console.log(`🎯 Returning user object...`);
   return result.rows[0];
 }
 
