@@ -560,14 +560,16 @@ async function resetUser(phone) {
     // Eliminar alertas
     await pool.query('DELETE FROM financial_alerts WHERE user_id = $1', [userId]);
     
-    // Resetear campos de onboarding
+    // Resetear campos de onboarding e income update
     await pool.query(
       `UPDATE users 
        SET name = NULL,
            monthly_income = NULL, 
            savings_goal = NULL, 
            onboarding_complete = false, 
-           onboarding_step = 'awaiting_name'
+           onboarding_step = 'awaiting_name',
+           last_income_update_prompt = NULL,
+           income_update_declined = false
        WHERE id = $1`,
       [userId]
     );
