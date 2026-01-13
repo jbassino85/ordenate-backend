@@ -216,6 +216,9 @@ async function processUserMessage(phone, message) {
       case 'RECLASSIFY_TRANSACTION':
         await handleReclassifyTransaction(user, intent.data);
         break;
+      case 'QUERY_CATEGORIES':
+        await handleQueryCategories(user);
+        break;
       default:
         await sendWhatsApp(phone, 
           '🤔 Mmm, no te entendí. Prueba con:\n\n' +
@@ -237,6 +240,13 @@ async function processUserMessage(phone, message) {
 // ============================================
 
 async function classifyIntent(message, user) {
+  // Cargar categorías válidas desde DB (SIEMPRE consultar DB como fuente de verdad)
+  const expenseCategories = await getValidCategories('expense');
+  const incomeCategories = await getValidCategories('income');
+  
+  const expenseCategoriesText = expenseCategories.map(c => c.name).join(', ');
+  const incomeCategoriesText = incomeCategories.map(c => c.name).join(', ');
+  
   // System instructions (CACHED - Se reutilizan entre llamadas)
   const systemInstructions = [
     {
@@ -313,7 +323,17 @@ CATEGORÍAS POSIBLES:
    - "Clasificar como salud"
    Debe retornar: { new_category: "nombre_categoria" }
    
-8. OTHER: Otro tipo
+8. QUERY_CATEGORIES: Consultar categorías disponibles
+   Palabras clave: "qué categorías", "cuáles categorías", "categorías disponibles", 
+                   "lista de categorías", "categorías válidas", "en qué puedo clasificar"
+   Ejemplos:
+   - "¿Qué categorías hay?"
+   - "¿Cuáles son las categorías?"
+   - "Muéstrame las categorías"
+   - "¿En qué categorías puedo clasificar?"
+   Debe retornar: {}
+   
+9. OTHER: Otro tipo
 
 MODISMOS CHILENOS:
 - "lucas/luca/lukas" = miles de pesos (ej: "5 lucas" = 5000)
@@ -321,12 +341,13 @@ MODISMOS CHILENOS:
 - "palo" = millón
 - "chaucha" = poco dinero
 
-CATEGORÍAS DE GASTOS:
-supermercados, comida, transporte, entretenimiento, salud, servicios, compras, hogar, educacion, otros
+CATEGORÍAS DE GASTOS (consultar SIEMPRE esta lista desde la base de datos):
+${expenseCategoriesText}
 
-CATEGORÍAS DE INGRESOS:
-sueldo, freelance, ventas, inversiones, otros
+CATEGORÍAS DE INGRESOS (consultar SIEMPRE esta lista desde la base de datos):
+${incomeCategoriesText}
 
+IMPORTANTE: SOLO usa las categorías listadas arriba. NO inventes categorías nuevas.
 Nota: Cuando is_income = true, usar categorías de ingresos. Cuando is_income = false, usar categorías de gastos.
 
 CONTEXTO TIENDAS CHILENAS (EJEMPLOS):
@@ -1023,6 +1044,19 @@ async function handleReclassifyTransaction(user, data) {
   if (transaction.description) {
     reply += `\n📝 ${transaction.description}`;
   }
+  
+  await sendWhatsApp(user.phone, reply);
+}
+
+// Manejar consulta de categorías disponibles
+async function handleQueryCategories(user) {
+  const expenseCategories = await formatCategoriesList('expense');
+  const incomeCategories = await formatCategoriesList('income');
+  
+  const reply = 
+    `📊 Categorías disponibles:\n\n` +
+    `💸 GASTOS:\n${expenseCategories}\n\n` +
+    `💰 INGRESOS:\n${incomeCategories}`;
   
   await sendWhatsApp(user.phone, reply);
 }
