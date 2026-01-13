@@ -104,6 +104,14 @@ const ADMIN_PHONE = '+56982391528';
 // Feature flags
 const SHOW_PREMIUM_MESSAGE = process.env.SHOW_PREMIUM_MESSAGE === 'true';
 
+// Income update prompt configuration
+const INCOME_UPDATE_CONFIG = {
+  MIN_MONTHS_HISTORY: 2,        // Mínimo meses con ingresos para sugerir
+  DIFF_THRESHOLD_PERCENT: 20,   // Diferencia mínima para preguntar (%)
+  COOLDOWN_DAYS_NORMAL: 30,     // Días entre preguntas (normal)
+  COOLDOWN_DAYS_DECLINED: 60    // Días si usuario dijo "no"
+};
+
 async function processUserMessage(phone, message) {
   try {
     console.log(`🔄 Processing message from ${phone}: "${message}"`);
@@ -173,6 +181,9 @@ async function processUserMessage(phone, message) {
         break;
       case 'FINANCIAL_ADVICE':
         await handleFinancialAdvice(user, intent.data, message);
+        break;
+      case 'UPDATE_INCOME_RESPONSE':
+        await handleIncomeUpdateResponse(user, intent.data);
         break;
       default:
         await sendWhatsApp(phone, 
@@ -254,7 +265,13 @@ CATEGORÍAS POSIBLES:
    Ejemplos: "¿puedo comprar un auto?", "¿cómo ahorro más?", "dame consejos financieros", 
              "¿debería gastar en X?", "estrategias de ahorro", "¿puedo permitirme X?"
    
-6. OTHER: Otro tipo
+6. UPDATE_INCOME_RESPONSE: Respuesta a sugerencia de actualización de ingreso
+   Solo clasificar como este intent si el bot acaba de preguntar sobre actualizar income.
+   Ejemplos de ACEPTACIÓN: "sí", "si", "dale", "ok", "actualizar", "acepto", "correcto"
+   Ejemplos de RECHAZO: "no", "nope", "mejor no", "después", "mantener"
+   Debe retornar: { accepted: true/false }
+   
+7. OTHER: Otro tipo
 
 MODISMOS CHILENOS:
 - "lucas/luca/lukas" = miles de pesos (ej: "5 lucas" = 5000)
@@ -639,6 +656,200 @@ const confirmations = {
 };
 
 // ============================================
+// INCOME MANAGEMENT
+// ============================================
+
+// Calcular income efectivo (usado en alertas y cálculos)
+async function getEffectiveMonthlyIncome(user) {
+  // 1. Calcular ingresos del mes actual
+  const currentMonth = await pool.query(
+    `SELECT COALESCE(SUM(amount), 0) as total 
+     FROM transactions 
+     WHERE user_id = $1 
+     AND is_income = true 
+     AND date >= date_trunc('month', CURRENT_DATE)`,
+    [user.id]
+  );
+  const currentIncome = parseFloat(currentMonth.rows[0].total);
+  
+  // 2. Calcular promedio últimos 3 meses (excluyendo mes actual)
+  const last3Months = await pool.query(
+    `SELECT COALESCE(AVG(monthly_total), 0) as avg_income
+     FROM (
+       SELECT date_trunc('month', date) as month, 
+              SUM(amount) as monthly_total
+       FROM transactions
+       WHERE user_id = $1 
+       AND is_income = true
+       AND date >= date_trunc('month', CURRENT_DATE) - INTERVAL '3 months'
+       AND date < date_trunc('month', CURRENT_DATE)
+       GROUP BY date_trunc('month', date)
+       HAVING SUM(amount) > 0
+     ) as monthly_totals`,
+    [user.id]
+  );
+  const avgLast3Months = parseFloat(last3Months.rows[0].avg_income);
+  
+  // 3. Base inteligente = MAX(promedio_3_meses, income_onboarding)
+  const baseIncome = Math.max(
+    parseFloat(user.monthly_income), 
+    avgLast3Months
+  );
+  
+  // 4. Si hay ingresos este mes, usar el mayor
+  if (currentIncome > 0) {
+    return Math.max(baseIncome, currentIncome);
+  }
+  
+  // 5. Si no hay ingresos este mes, usar base inteligente
+  return baseIncome;
+}
+
+// Verificar si debe sugerir actualización de income
+async function checkIncomeUpdatePrompt(user) {
+  try {
+    // 1. Verificar cooldown
+    if (user.last_income_update_prompt) {
+      const daysSinceLastPrompt = 
+        (Date.now() - new Date(user.last_income_update_prompt)) / (1000 * 60 * 60 * 24);
+      
+      const cooldownDays = user.income_update_declined ? 
+        INCOME_UPDATE_CONFIG.COOLDOWN_DAYS_DECLINED : 
+        INCOME_UPDATE_CONFIG.COOLDOWN_DAYS_NORMAL;
+      
+      if (daysSinceLastPrompt < cooldownDays) {
+        console.log(`⏰ Income update prompt on cooldown (${daysSinceLastPrompt.toFixed(0)}/${cooldownDays} days)`);
+        return; // Muy pronto para preguntar
+      }
+    }
+    
+    // 2. Calcular promedio últimos 3 meses
+    const last3Months = await pool.query(
+      `SELECT COALESCE(AVG(monthly_total), 0) as avg_income,
+              COUNT(*) as months_with_income
+       FROM (
+         SELECT date_trunc('month', date) as month, 
+                SUM(amount) as monthly_total
+         FROM transactions
+         WHERE user_id = $1 
+         AND is_income = true
+         AND date >= date_trunc('month', CURRENT_DATE) - INTERVAL '3 months'
+         AND date < date_trunc('month', CURRENT_DATE)
+         GROUP BY date_trunc('month', date)
+         HAVING SUM(amount) > 0
+       ) as monthly_totals`,
+      [user.id]
+    );
+    
+    const avgIncome = parseFloat(last3Months.rows[0].avg_income);
+    const monthsWithIncome = parseInt(last3Months.rows[0].months_with_income);
+    
+    console.log(`📊 Income check: avg=${avgIncome}, months=${monthsWithIncome}, current=${user.monthly_income}`);
+    
+    // 3. Verificar si hay suficiente historial
+    if (monthsWithIncome < INCOME_UPDATE_CONFIG.MIN_MONTHS_HISTORY) {
+      console.log(`⏳ Not enough history (${monthsWithIncome}/${INCOME_UPDATE_CONFIG.MIN_MONTHS_HISTORY} months)`);
+      return; // Necesita al menos N meses de datos
+    }
+    
+    // 4. Calcular diferencia
+    const currentIncome = parseFloat(user.monthly_income);
+    const difference = avgIncome - currentIncome;
+    const percentDiff = Math.abs(difference / currentIncome * 100);
+    
+    console.log(`💰 Income difference: ${percentDiff.toFixed(1)}% (threshold: ${INCOME_UPDATE_CONFIG.DIFF_THRESHOLD_PERCENT}%)`);
+    
+    // 5. Solo preguntar si diferencia > umbral
+    if (percentDiff < INCOME_UPDATE_CONFIG.DIFF_THRESHOLD_PERCENT) {
+      console.log(`✓ Difference not significant`);
+      return; // Diferencia no significativa
+    }
+    
+    // 6. Guardar que preguntamos
+    await pool.query(
+      'UPDATE users SET last_income_update_prompt = CURRENT_TIMESTAMP WHERE id = $1',
+      [user.id]
+    );
+    
+    console.log(`💡 Sending income update prompt...`);
+    
+    // 7. Enviar pregunta
+    const nameGreeting = user.name ? `${user.name}, ` : '';
+    
+    await sendWhatsApp(user.phone,
+      `\n💡 Hey ${nameGreeting}noté algo:\n\n` +
+      `Tu ingreso mensual declarado es $${currentIncome.toLocaleString('es-CL')}\n` +
+      `Pero en los últimos meses has ganado en promedio $${Math.round(avgIncome).toLocaleString('es-CL')}\n\n` +
+      `¿Quieres actualizar tu ingreso base a $${Math.round(avgIncome).toLocaleString('es-CL')}?\n` +
+      `(Esto mejorará tus alertas y proyecciones)\n\n` +
+      `Responde: "Sí" o "No"`
+    );
+    
+    console.log(`✅ Income update prompt sent`);
+    
+  } catch (error) {
+    console.error('❌ Error in checkIncomeUpdatePrompt:', error);
+    // No romper el flujo principal
+  }
+}
+
+// Manejar respuesta a sugerencia de actualización de income
+async function handleIncomeUpdateResponse(user, data) {
+  const { accepted } = data;
+  
+  if (accepted) {
+    // Usuario aceptó actualizar
+    
+    // Calcular promedio últimos 3 meses
+    const last3Months = await pool.query(
+      `SELECT COALESCE(AVG(monthly_total), 0) as avg_income
+       FROM (
+         SELECT date_trunc('month', date) as month, 
+                SUM(amount) as monthly_total
+         FROM transactions
+         WHERE user_id = $1 
+         AND is_income = true
+         AND date >= date_trunc('month', CURRENT_DATE) - INTERVAL '3 months'
+         AND date < date_trunc('month', CURRENT_DATE)
+         GROUP BY date_trunc('month', date)
+         HAVING SUM(amount) > 0
+       ) as monthly_totals`,
+      [user.id]
+    );
+    
+    const newIncome = Math.round(parseFloat(last3Months.rows[0].avg_income));
+    
+    // Actualizar income y resetear flag de declined
+    await pool.query(
+      'UPDATE users SET monthly_income = $1, income_update_declined = false WHERE id = $2',
+      [newIncome, user.id]
+    );
+    
+    console.log(`✅ Income updated: ${user.monthly_income} → ${newIncome}`);
+    
+    await sendWhatsApp(user.phone,
+      `¡Listo! Tu ingreso mensual actualizado a $${newIncome.toLocaleString('es-CL')} ✅\n\n` +
+      `Ahora tus alertas y proyecciones serán más precisas.`
+    );
+    
+  } else {
+    // Usuario rechazó actualizar
+    
+    await pool.query(
+      'UPDATE users SET income_update_declined = true WHERE id = $1',
+      [user.id]
+    );
+    
+    console.log(`❌ User declined income update`);
+    
+    await sendWhatsApp(user.phone,
+      `Ok, mantengo tu ingreso en $${parseFloat(user.monthly_income).toLocaleString('es-CL')}.\n\n` +
+      `Te preguntaré de nuevo en unos meses. Si cambias de opinión, puedes decirme: "Actualizar ingreso a [monto]"`
+    );
+  }
+}
+
+// ============================================
 // ONBOARDING CONVERSACIONAL
 // ============================================
 
@@ -825,7 +1036,8 @@ async function handleOnboarding(user, message) {
 
 // Sistema de alertas inteligentes
 async function checkFinancialHealth(user) {
-  const income = parseFloat(user.monthly_income);
+  // Usar income efectivo (considera ingresos extras del mes)
+  const income = await getEffectiveMonthlyIncome(user);
   const savingsGoal = parseFloat(user.savings_goal);
   const spendingBudget = income - savingsGoal;
   
@@ -1006,6 +1218,17 @@ async function handleTransaction(user, data) {
     } catch (error) {
       console.error('❌ Error in checkFinancialHealth:', error);
       // No romper el flujo si las alertas fallan
+    }
+  }
+  
+  // Verificar si debe sugerir actualización de income
+  // Solo después de transacciones y si completó onboarding
+  if (user.onboarding_complete) {
+    try {
+      await checkIncomeUpdatePrompt(user);
+    } catch (error) {
+      console.error('❌ Error in checkIncomeUpdatePrompt:', error);
+      // No romper el flujo principal
     }
   }
 }
