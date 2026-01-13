@@ -1221,7 +1221,7 @@ async function handleOnboarding(user, message) {
         `${incomeConfirm} $${amount.toLocaleString('es-CL')}\n\n` +
         '🎯 ¿Cuánto quieres ahorrar al mes?\n\n' +
         'Tip: Lo ideal es ahorrar entre 10-20% de lo que ganas.\n' +
-        `(En tu caso, entre $${(amount * 0.1).toLocaleString('es-CL')} y $${(amount * 0.2).toLocaleString('es-CL')})`
+        `(En tu caso, entre $${Math.round(amount * 0.1).toLocaleString('es-CL')} y $${Math.round(amount * 0.2).toLocaleString('es-CL')})`
       );
       console.log(`✅ Message sent successfully`);
       break;
@@ -1340,8 +1340,8 @@ async function checkFinancialHealth(user) {
   const now = new Date();
   const dayOfMonth = now.getDate();
   const daysInMonth = new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate();
-  const projectedTotal = (totalSpent / dayOfMonth) * daysInMonth;
-  const projectedSavings = income - projectedTotal;
+  const projectedTotal = Math.round((totalSpent / dayOfMonth) * daysInMonth);
+  const projectedSavings = Math.round(income - projectedTotal);
   
   // Encontrar categoría más gastadora
   const topCategory = spentResult.rows[0];
@@ -1417,7 +1417,7 @@ async function checkFinancialHealth(user) {
 async function generateFinancialAdvice(user, financialData) {
   const { totalSpent, spendingBudget, topCategory, topCategoryAmount, savingsGoal, income } = financialData;
   
-  const prompt = `Eres un asesor financiero en Chile. Analiza esta situación y da un consejo específico y accionable (máximo 3 líneas):
+  const prompt = `Eres un asesor financiero en Chile. Analiza esta situación y da un consejo específico y accionable en máximo 3 líneas:
 
 Ingreso mensual: $${income.toLocaleString('es-CL')}
 Meta de ahorro: $${savingsGoal.toLocaleString('es-CL')}
@@ -1425,7 +1425,7 @@ Presupuesto para gastos: $${spendingBudget.toLocaleString('es-CL')}
 Gastado hasta ahora: $${totalSpent.toLocaleString('es-CL')}
 Categoría más alta: ${topCategory} ($${topCategoryAmount.toLocaleString('es-CL')})
 
-Da un consejo específico de cómo reducir gastos en ${topCategory} o ajustar hábitos. Sé directo y práctico.`;
+Responde SOLO con el consejo directo, sin preámbulos como "Consejo:" o "Te recomiendo:". Empieza directamente con la acción, por ejemplo: "Reduce ${topCategory} de $X a $Y..."`;
 
   try {
     const response = await anthropic.messages.create({
@@ -1437,10 +1437,10 @@ Da un consejo específico de cómo reducir gastos en ${topCategory} o ajustar h�
       }]
     });
     
-    return `💡 Consejo:\n${response.content[0].text}`;
+    return `${response.content[0].text}`;
   } catch (error) {
     console.error('❌ Error generating advice:', error);
-    return `💡 Consejo:\nTrata de reducir gastos en ${topCategory} esta semana para volver al presupuesto.`;
+    return `Trata de reducir gastos en ${topCategory} esta semana para volver al presupuesto.`;
   }
 }
 
@@ -1875,8 +1875,8 @@ async function handleFinancialAdvice(user, data, originalQuestion) {
   const now = new Date();
   const dayOfMonth = now.getDate();
   const daysInMonth = new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate();
-  const projectedTotal = totalSpent > 0 ? (totalSpent / dayOfMonth) * daysInMonth : 0;
-  const projectedSavings = income - projectedTotal;
+  const projectedTotal = totalSpent > 0 ? Math.round((totalSpent / dayOfMonth) * daysInMonth) : 0;
+  const projectedSavings = Math.round(income - projectedTotal);
   
   // Construir contexto para Claude
   let context = `Eres un asesor financiero en Chile. El usuario te pregunta: "${originalQuestion}"\n\n`;
