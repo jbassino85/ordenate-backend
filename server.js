@@ -1852,6 +1852,7 @@ async function handleFinancialAdvice(user, data, originalQuestion) {
   // Obtener gastos del mes actual por categoría
   const spentResult = await pool.query(
     `SELECT 
+       c.id as category_id,
        c.name as category,
        SUM(t.amount) as total
      FROM transactions t
@@ -1859,7 +1860,7 @@ async function handleFinancialAdvice(user, data, originalQuestion) {
      WHERE t.user_id = $1 
        AND t.date >= date_trunc('month', CURRENT_DATE)
        AND t.is_income = false
-     GROUP BY c.name
+     GROUP BY c.id, c.name
      ORDER BY total DESC`,
     [user.id]
   );
@@ -1902,6 +1903,36 @@ async function handleFinancialAdvice(user, data, originalQuestion) {
       context += `- ${row.category}: $${parseFloat(row.total).toLocaleString('es-CL')} (${percentage.toFixed(1)}% del ingreso)\n`;
     });
     context += `\n`;
+    
+    // Agregar detalle de transacciones de las top 3 categorías
+    const topCategories = spentResult.rows.slice(0, 3);
+    if (topCategories.length > 0) {
+      context += `DETALLE DE TRANSACCIONES (top categorías):\n`;
+      
+      for (const topCat of topCategories) {
+        const txResult = await pool.query(
+          `SELECT description, amount, date 
+           FROM transactions 
+           WHERE user_id = $1 
+             AND category_id = $2
+             AND date >= date_trunc('month', CURRENT_DATE)
+             AND is_income = false
+           ORDER BY date DESC
+           LIMIT 5`,
+          [user.id, topCat.category_id]
+        );
+        
+        if (txResult.rows.length > 0) {
+          context += `\n${topCat.category}:\n`;
+          txResult.rows.forEach(tx => {
+            const desc = tx.description ? ` - ${tx.description}` : '';
+            const date = new Date(tx.date).getDate();
+            context += `  • ${date}/1: $${parseFloat(tx.amount).toLocaleString('es-CL')}${desc}\n`;
+          });
+        }
+      }
+      context += `\n`;
+    }
   }
   
   if (budgetsResult.rows.length > 0) {
@@ -1920,8 +1951,9 @@ async function handleFinancialAdvice(user, data, originalQuestion) {
   context += `2. Sé directo, práctico y empático\n`;
   context += `3. Si pregunta sobre comprar algo, analiza si puede permitírselo sin comprometer su meta de ahorro\n`;
   context += `4. Da consejos accionables y específicos basados en su comportamiento real\n`;
-  context += `5. Usa máximo 5-6 líneas\n`;
-  context += `6. Usa emojis relevantes pero no abuses`;
+  context += `5. Tienes acceso al DETALLE DE TRANSACCIONES - úsalo para dar respuestas específicas, NO hagas preguntas sobre información que ya tienes\n`;
+  context += `6. Usa máximo 5-6 líneas\n`;
+  context += `7. Usa emojis relevantes pero no abuses`;
   
   try {
     const response = await anthropic.messages.create({
