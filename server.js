@@ -972,10 +972,14 @@ async function handleReclassifyTransaction(user, data) {
   // Normalizar categoría
   const categoryLower = new_category.toLowerCase().trim();
   
-  // Validar que la categoría existe
-  const isValid = await isValidCategory(categoryLower, 'expense');
+  // Obtener category_id de la nueva categoría
+  const newCategoryResult = await pool.query(
+    `SELECT id, name, emoji FROM categories 
+     WHERE LOWER(name) = $1 AND type = 'expense' AND is_active = true`,
+    [categoryLower]
+  );
   
-  if (!isValid) {
+  if (newCategoryResult.rows.length === 0) {
     // Categoría no válida - mostrar lista completa
     const categoriesList = await formatCategoriesList('expense');
     
@@ -986,13 +990,19 @@ async function handleReclassifyTransaction(user, data) {
     return;
   }
   
-  // Buscar última transacción del usuario (< 5 minutos)
+  const newCategoryId = newCategoryResult.rows[0].id;
+  const newCategoryName = newCategoryResult.rows[0].name;
+  const newEmoji = newCategoryResult.rows[0].emoji;
+  
+  // Buscar última transacción del usuario (< 5 minutos) con JOIN
   const result = await pool.query(
-    `SELECT id, category, amount, description, is_income 
-     FROM transactions
-     WHERE user_id = $1 
-       AND created_at >= NOW() - INTERVAL '5 minutes'
-     ORDER BY created_at DESC
+    `SELECT t.id, t.category_id, c.name as category, c.emoji as old_emoji, 
+            t.amount, t.description, t.is_income 
+     FROM transactions t
+     JOIN categories c ON t.category_id = c.id
+     WHERE t.user_id = $1 
+       AND t.created_at >= NOW() - INTERVAL '5 minutes'
+     ORDER BY t.created_at DESC
      LIMIT 1`,
     [user.id]
   );
@@ -1016,30 +1026,27 @@ async function handleReclassifyTransaction(user, data) {
     return;
   }
   
-  const oldCategory = transaction.category;
-  
   // Verificar si ya está en esa categoría
-  if (oldCategory.toLowerCase() === categoryLower) {
+  if (transaction.category_id === newCategoryId) {
     await sendWhatsApp(user.phone,
-      `✓ Ya está clasificado en ${categoryLower}.`
+      `✓ Ya está clasificado en ${newCategoryName}.`
     );
     return;
   }
   
-  // Actualizar categoría
+  const oldCategory = transaction.category;
+  const oldEmoji = transaction.old_emoji;
+  
+  // Actualizar categoría con category_id
   await pool.query(
-    'UPDATE transactions SET category = $1 WHERE id = $2',
-    [categoryLower, transaction.id]
+    'UPDATE transactions SET category_id = $1 WHERE id = $2',
+    [newCategoryId, transaction.id]
   );
   
-  console.log(`♻️ Transaction reclassified: ${oldCategory} → ${categoryLower}`);
-  
-  // Obtener emojis
-  const oldEmoji = await getCategoryEmoji(oldCategory, 'expense');
-  const newEmoji = await getCategoryEmoji(categoryLower, 'expense');
+  console.log(`♻️ Transaction reclassified: ${oldCategory} → ${newCategoryName}`);
   
   // Confirmar
-  let reply = `Ok! Reclasifiqué de ${oldEmoji} ${oldCategory} → ${newEmoji} ${categoryLower} ✅\n\n`;
+  let reply = `Ok! Reclasifiqué de ${oldEmoji} ${oldCategory} → ${newEmoji} ${newCategoryName} ✅\n\n`;
   reply += `💵 $${Number(transaction.amount).toLocaleString('es-CL')}`;
   if (transaction.description) {
     reply += `\n📝 ${transaction.description}`;
@@ -1264,16 +1271,18 @@ async function checkFinancialHealth(user) {
     return; // Ya enviamos alerta hoy
   }
   
-  // Calcular gastos del mes actual
+  // Calcular gastos del mes actual con JOIN
   const spentResult = await pool.query(
     `SELECT 
-       category,
-       SUM(amount) as category_total
-     FROM transactions 
-     WHERE user_id = $1 
-       AND date >= date_trunc('month', CURRENT_DATE)
-       AND is_income = false
-     GROUP BY category
+       c.name as category,
+       c.emoji,
+       SUM(t.amount) as category_total
+     FROM transactions t
+     JOIN categories c ON t.category_id = c.id
+     WHERE t.user_id = $1 
+       AND t.date >= date_trunc('month', CURRENT_DATE)
+       AND t.is_income = false
+     GROUP BY c.id, c.name, c.emoji
      ORDER BY category_total DESC`,
     [user.id]
   );
@@ -1329,8 +1338,9 @@ async function checkFinancialHealth(user) {
   if (topCategoryPercentage > 30 && !shouldAlert) {
     shouldAlert = true;
     alertType = 'category_high';
+    const emoji = topCategory.emoji || '💸';
     alertMessage = `💡 Te cuento algo\n\n` +
-      `Estás gastando harto en ${topCategory.category}:\n` +
+      `Estás gastando harto en ${emoji} ${topCategory.category}:\n` +
       `$${parseFloat(topCategory.category_total).toLocaleString('es-CL')} (${topCategoryPercentage.toFixed(0)}% de lo que ganas)\n\n` +
       `Lo ideal es que ninguna categoría pase del 30%.\n\n`;
   }
@@ -1399,15 +1409,38 @@ Da un consejo específico de cómo reducir gastos en ${topCategory} o ajustar h�
 async function handleTransaction(user, data) {
   const { amount, category, description, is_income } = data;
   
-  // Insertar transacción
+  // Obtener category_id desde DB
+  const categoryName = (category || 'otros').toLowerCase();
+  const categoryType = is_income ? 'income' : 'expense';
+  
+  const categoryResult = await pool.query(
+    `SELECT id, emoji FROM categories 
+     WHERE LOWER(name) = $1 AND type = $2 AND is_active = true`,
+    [categoryName, categoryType]
+  );
+  
+  if (categoryResult.rows.length === 0) {
+    console.error(`❌ Category not found: ${categoryName} (${categoryType})`);
+    // Fallback a "otros"
+    const otrosResult = await pool.query(
+      `SELECT id, emoji FROM categories WHERE name = 'otros' AND type = $1`,
+      [categoryType]
+    );
+    var categoryId = otrosResult.rows[0].id;
+    var categoryEmoji = otrosResult.rows[0].emoji;
+  } else {
+    var categoryId = categoryResult.rows[0].id;
+    var categoryEmoji = categoryResult.rows[0].emoji;
+  }
+  
+  // Insertar transacción con category_id
   await pool.query(
-    `INSERT INTO transactions (user_id, amount, category, description, date, is_income)
+    `INSERT INTO transactions (user_id, amount, category_id, description, date, is_income)
      VALUES ($1, $2, $3, $4, CURRENT_DATE, $5)`,
-    [user.id, amount, category || 'otros', description || '', is_income || false]
+    [user.id, amount, categoryId, description || '', is_income || false]
   );
   
   // Mensaje variado
-  const categoryName = (category || 'otros').toLowerCase();
   const variations = is_income ? confirmations.income : confirmations.transaction;
   const confirmMessage = randomVariation(variations)(categoryName);
   
@@ -1417,9 +1450,9 @@ async function handleTransaction(user, data) {
   
   await sendWhatsApp(user.phone, reply);
   
-  // Verificar alertas de presupuesto
-  if (category) {
-    await checkBudgetAlerts(user, category);
+  // Verificar alertas de presupuesto (pasar category_id en vez de nombre)
+  if (categoryId) {
+    await checkBudgetAlerts(user, categoryId);
   }
   
   // Sistema de alertas inteligentes (solo para gastos, no ingresos)
@@ -1453,53 +1486,66 @@ async function handleQuery(user, data) {
   
   switch(period) {
     case 'today':
-      dateFilter = 'date = CURRENT_DATE';
+      dateFilter = 't.date = CURRENT_DATE';
       periodText = 'hoy';
       break;
     case 'yesterday':
-      dateFilter = 'date = CURRENT_DATE - INTERVAL \'1 day\'';
+      dateFilter = 't.date = CURRENT_DATE - INTERVAL \'1 day\'';
       periodText = 'ayer';
       break;
     case 'week':
-      dateFilter = "date >= date_trunc('week', CURRENT_DATE)";
+      dateFilter = "t.date >= date_trunc('week', CURRENT_DATE)";
       periodText = 'esta semana';
       break;
     case 'month':
-      dateFilter = "date >= date_trunc('month', CURRENT_DATE)";
+      dateFilter = "t.date >= date_trunc('month', CURRENT_DATE)";
       periodText = 'este mes';
       break;
     case 'year':
-      dateFilter = "date >= date_trunc('year', CURRENT_DATE)";
+      dateFilter = "t.date >= date_trunc('year', CURRENT_DATE)";
       periodText = 'este año';
       break;
     case 'last_week':
-      dateFilter = "date >= date_trunc('week', CURRENT_DATE - INTERVAL '1 week') AND date < date_trunc('week', CURRENT_DATE)";
+      dateFilter = "t.date >= date_trunc('week', CURRENT_DATE - INTERVAL '1 week') AND t.date < date_trunc('week', CURRENT_DATE)";
       periodText = 'la semana pasada';
       break;
     case 'last_month':
-      dateFilter = "date >= date_trunc('month', CURRENT_DATE - INTERVAL '1 month') AND date < date_trunc('month', CURRENT_DATE)";
+      dateFilter = "t.date >= date_trunc('month', CURRENT_DATE - INTERVAL '1 month') AND t.date < date_trunc('month', CURRENT_DATE)";
       periodText = 'el mes pasado';
       break;
+  }
+  
+  // Obtener category_id si se especificó una categoría
+  let categoryId = null;
+  if (category) {
+    const catResult = await pool.query(
+      `SELECT id FROM categories WHERE LOWER(name) = LOWER($1) AND type = 'expense'`,
+      [category]
+    );
+    if (catResult.rows.length > 0) {
+      categoryId = catResult.rows[0].id;
+    }
   }
   
   // Si pide detalle, mostrar transacciones individuales
   if (detail) {
     let query = `
-      SELECT category, description, amount, date, is_income
-      FROM transactions
-      WHERE user_id = $1 AND ${dateFilter}
+      SELECT c.name as category, c.emoji, t.description, t.amount, t.date, t.is_income
+      FROM transactions t
+      JOIN categories c ON t.category_id = c.id
+      WHERE t.user_id = $1 AND ${dateFilter}
     `;
     
-    if (category) {
-      query += ` AND category = $2`;
+    const params = [user.id];
+    
+    if (categoryId) {
+      query += ` AND t.category_id = $2`;
+      params.push(categoryId);
     }
     
-    query += ' ORDER BY category, date DESC';
+    query += ' ORDER BY c.name, t.date DESC';
     
-    const result = await pool.query(
-      query,
-      category ? [user.id, category] : [user.id]
-    );
+    const result = await pool.query(query, params);
     
     if (result.rows.length === 0) {
       const catText = category ? ` en ${category}` : '';
@@ -1514,9 +1560,12 @@ async function handleQuery(user, data) {
     
     result.rows.forEach(row => {
       if (!byCategory[row.category]) {
-        byCategory[row.category] = [];
+        byCategory[row.category] = {
+          emoji: row.emoji,
+          transactions: []
+        };
       }
-      byCategory[row.category].push(row);
+      byCategory[row.category].transactions.push(row);
       
       if (row.is_income) {
         totalIncome += parseFloat(row.amount);
@@ -1525,38 +1574,18 @@ async function handleQuery(user, data) {
       }
     });
     
-    // Emojis por categoría
-    const categoryEmojis = {
-      // Gastos
-      supermercados: '🛒',
-      comida: '🍕',
-      transporte: '🚗',
-      entretenimiento: '🎬',
-      salud: '⚕️',
-      servicios: '🔧',
-      compras: '🛍️',
-      hogar: '🏠',
-      educacion: '📚',
-      // Ingresos
-      sueldo: '💰',
-      freelance: '💼',
-      ventas: '💵',
-      inversiones: '📈',
-      otros: '📦'
-    };
-    
     const catText = category ? ` - ${category.charAt(0).toUpperCase() + category.slice(1)}` : '';
     const nameGreeting = user.name ? `${user.name}, aquí está tu ` : '';
     let reply = `📊 ${nameGreeting}Detalle ${periodText}${catText}:\n\n`;
     
     // Mostrar cada categoría con sus transacciones
     Object.keys(byCategory).sort().forEach(cat => {
-      const emoji = categoryEmojis[cat] || '💸';
-      const catTotal = byCategory[cat].reduce((sum, t) => sum + parseFloat(t.amount), 0);
+      const { emoji, transactions } = byCategory[cat];
+      const catTotal = transactions.reduce((sum, t) => sum + parseFloat(t.amount), 0);
       
       reply += `${emoji} ${cat.charAt(0).toUpperCase() + cat.slice(1)}:\n`;
       
-      byCategory[cat].forEach(transaction => {
+      transactions.forEach(transaction => {
         const date = new Date(transaction.date);
         const dateStr = `${String(date.getDate()).padStart(2, '0')}/${String(date.getMonth() + 1).padStart(2, '0')}`;
         reply += `  • ${transaction.description || 'Sin descripción'}: $${Number(transaction.amount).toLocaleString('es-CL')} (${dateStr})\n`;
@@ -1577,26 +1606,28 @@ async function handleQuery(user, data) {
     return;
   }
   
-  // Modo resumen (agregado por categoría) - código existente
+  // Modo resumen (agregado por categoría)
   let query = `
     SELECT 
-      category,
-      SUM(CASE WHEN is_income = false THEN amount ELSE 0 END) as expenses,
-      SUM(CASE WHEN is_income = true THEN amount ELSE 0 END) as income
-    FROM transactions
-    WHERE user_id = $1 AND ${dateFilter}
+      c.name as category,
+      c.emoji,
+      SUM(CASE WHEN t.is_income = false THEN t.amount ELSE 0 END) as expenses,
+      SUM(CASE WHEN t.is_income = true THEN t.amount ELSE 0 END) as income
+    FROM transactions t
+    JOIN categories c ON t.category_id = c.id
+    WHERE t.user_id = $1 AND ${dateFilter}
   `;
   
-  if (category) {
-    query += ` AND category = $2`;
+  const params = [user.id];
+  
+  if (categoryId) {
+    query += ` AND t.category_id = $2`;
+    params.push(categoryId);
   }
   
-  query += ' GROUP BY category ORDER BY expenses DESC';
+  query += ' GROUP BY c.id, c.name, c.emoji ORDER BY expenses DESC';
   
-  const result = await pool.query(
-    query,
-    category ? [user.id, category] : [user.id]
-  );
+  const result = await pool.query(query, params);
   
   if (result.rows.length === 0) {
     const catText = category ? ` en ${category}` : '';
@@ -1618,7 +1649,8 @@ async function handleQuery(user, data) {
     totalIncome += income;
     
     if (expenses > 0) {
-      reply += `💸 ${row.category}: $${expenses.toLocaleString('es-CL')}\n`;
+      const emoji = row.emoji || '💸';
+      reply += `${emoji} ${row.category}: $${expenses.toLocaleString('es-CL')}\n`;
     }
   });
   
@@ -1650,16 +1682,31 @@ async function handleBudget(user, data) {
     return;
   }
   
-  // Upsert presupuesto
-  await pool.query(
-    `INSERT INTO budgets (user_id, category, monthly_limit)
-     VALUES ($1, $2, $3)
-     ON CONFLICT (user_id, category) 
-     DO UPDATE SET monthly_limit = $3`,
-    [user.id, category, amount]
+  // Obtener category_id
+  const categoryResult = await pool.query(
+    `SELECT id, name FROM categories 
+     WHERE LOWER(name) = LOWER($1) AND type = 'expense' AND is_active = true`,
+    [category]
   );
   
-  const budgetConfirm = randomVariation(confirmations.budget)(category);
+  if (categoryResult.rows.length === 0) {
+    await sendWhatsApp(user.phone, `No reconozco la categoría "${category}".`);
+    return;
+  }
+  
+  const categoryId = categoryResult.rows[0].id;
+  const categoryName = categoryResult.rows[0].name;
+  
+  // Upsert presupuesto con category_id
+  await pool.query(
+    `INSERT INTO budgets (user_id, category_id, monthly_limit)
+     VALUES ($1, $2, $3)
+     ON CONFLICT (user_id, category_id) 
+     DO UPDATE SET monthly_limit = $3`,
+    [user.id, categoryId, amount]
+  );
+  
+  const budgetConfirm = randomVariation(confirmations.budget)(categoryName);
   
   await sendWhatsApp(user.phone,
     `${budgetConfirm}\n\n💰 $${Number(amount).toLocaleString('es-CL')} al mes\n\nTe aviso cuando llegues al 80% y 100%.`
@@ -1667,9 +1714,13 @@ async function handleBudget(user, data) {
 }
 
 async function handleBudgetStatus(user, data) {
-  // Obtener todos los presupuestos del usuario
+  // Obtener todos los presupuestos del usuario con JOIN
   const budgetsResult = await pool.query(
-    `SELECT category, monthly_limit FROM budgets WHERE user_id = $1 ORDER BY category`,
+    `SELECT b.category_id, c.name, c.emoji, b.monthly_limit
+     FROM budgets b
+     JOIN categories c ON b.category_id = c.id
+     WHERE b.user_id = $1
+     ORDER BY c.name`,
     [user.id]
   );
   
@@ -1679,26 +1730,6 @@ async function handleBudgetStatus(user, data) {
     );
     return;
   }
-  
-  // Emojis por categoría
-  const categoryEmojis = {
-    // Gastos
-    supermercados: '🛒',
-    comida: '🍕',
-    transporte: '🚗',
-    entretenimiento: '🎬',
-    salud: '⚕️',
-    servicios: '🔧',
-    compras: '🛍️',
-    hogar: '🏠',
-    educacion: '📚',
-    // Ingresos
-    sueldo: '💰',
-    freelance: '💼',
-    ventas: '💵',
-    inversiones: '📈',
-    otros: '📦'
-  };
   
   // Obtener mes actual para el título
   const months = ['enero', 'febrero', 'marzo', 'abril', 'mayo', 'junio', 
@@ -1714,13 +1745,13 @@ async function handleBudgetStatus(user, data) {
     const limit = parseFloat(budget.monthly_limit);
     totalBudget += limit;
     
-    // Calcular gasto del mes actual en esta categoría
+    // Calcular gasto del mes actual en esta categoría con category_id
     const spentResult = await pool.query(
       `SELECT COALESCE(SUM(amount), 0) as total FROM transactions 
-       WHERE user_id = $1 AND category = $2 
+       WHERE user_id = $1 AND category_id = $2 
        AND date >= date_trunc('month', CURRENT_DATE)
        AND is_income = false`,
-      [user.id, budget.category]
+      [user.id, budget.category_id]
     );
     
     const spent = parseFloat(spentResult.rows[0].total);
@@ -1729,8 +1760,8 @@ async function handleBudgetStatus(user, data) {
     const percentage = (spent / limit) * 100;
     const available = limit - spent;
     
-    const emoji = categoryEmojis[budget.category] || '📦';
-    const catName = budget.category.charAt(0).toUpperCase() + budget.category.slice(1);
+    const emoji = budget.emoji || '📦';
+    const catName = budget.name.charAt(0).toUpperCase() + budget.name.slice(1);
     
     reply += `${emoji} ${catName}:\n`;
     reply += `  Presupuesto: $${limit.toLocaleString('es-CL')}\n`;
@@ -1862,24 +1893,28 @@ async function handleFinancialAdvice(user, data, originalQuestion) {
   }
 }
 
-async function checkBudgetAlerts(user, category) {
-  // Obtener presupuesto
+async function checkBudgetAlerts(user, categoryId) {
+  // Obtener presupuesto con JOIN para traer nombre y emoji
   const budgetResult = await pool.query(
-    `SELECT monthly_limit FROM budgets WHERE user_id = $1 AND category = $2`,
-    [user.id, category]
+    `SELECT b.monthly_limit, c.name, c.emoji
+     FROM budgets b
+     JOIN categories c ON b.category_id = c.id
+     WHERE b.user_id = $1 AND b.category_id = $2`,
+    [user.id, categoryId]
   );
   
   if (budgetResult.rows.length === 0) return;
   
-  const budget = parseFloat(budgetResult.rows[0].monthly_limit);
+  const { monthly_limit, name, emoji } = budgetResult.rows[0];
+  const budget = parseFloat(monthly_limit);
   
-  // Calcular gasto del mes
+  // Calcular gasto del mes con category_id
   const spentResult = await pool.query(
     `SELECT SUM(amount) as total FROM transactions 
-     WHERE user_id = $1 AND category = $2 
+     WHERE user_id = $1 AND category_id = $2 
      AND date >= date_trunc('month', CURRENT_DATE)
      AND is_income = false`,
-    [user.id, category]
+    [user.id, categoryId]
   );
   
   const spent = parseFloat(spentResult.rows[0].total || 0);
@@ -1887,11 +1922,11 @@ async function checkBudgetAlerts(user, category) {
   
   if (percentage >= 100) {
     await sendWhatsApp(user.phone, 
-      `🚨 ¡Ojo! Te pasaste del presupuesto de ${category}:\n\nGastaste: $${spent.toLocaleString('es-CL')}\nTenías: $${budget.toLocaleString('es-CL')}`
+      `🚨 ¡Ojo! Te pasaste del presupuesto de ${emoji} ${name}:\n\nGastaste: $${spent.toLocaleString('es-CL')}\nTenías: $${budget.toLocaleString('es-CL')}`
     );
   } else if (percentage >= 80) {
     await sendWhatsApp(user.phone,
-      `⚠️ Atención: Ya llevas ${percentage.toFixed(0)}% del presupuesto en ${category}`
+      `⚠️ Atención: Ya llevas ${percentage.toFixed(0)}% del presupuesto en ${emoji} ${name}`
     );
   }
 }
