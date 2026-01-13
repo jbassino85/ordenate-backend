@@ -1868,7 +1868,10 @@ async function handleFinancialAdvice(user, data, originalQuestion) {
   
   // Obtener presupuestos configurados
   const budgetsResult = await pool.query(
-    `SELECT category, monthly_limit FROM budgets WHERE user_id = $1`,
+    `SELECT c.name as category, b.monthly_limit 
+     FROM budgets b
+     JOIN categories c ON b.category_id = c.id
+     WHERE b.user_id = $1`,
     [user.id]
   );
   
