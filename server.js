@@ -98,9 +98,18 @@ app.post('/webhook', async (req, res) => {
 // PROCESAMIENTO DE MENSAJES
 // ============================================
 
+// Admin phone (hardcoded)
+const ADMIN_PHONE = '+56982391528';
+
 async function processUserMessage(phone, message) {
   try {
     console.log(`🔄 Processing message from ${phone}: "${message}"`);
+    
+    // ADMIN COMMANDS - Solo para el número admin
+    if (phone === ADMIN_PHONE && message.startsWith('/admin')) {
+      await handleAdminCommand(phone, message);
+      return;
+    }
     
     // 1. Obtener o crear usuario
     let user = await getOrCreateUser(phone);
@@ -394,6 +403,192 @@ EJEMPLOS DE QUERIES:
     console.error('❌ Claude error:', error);
     return { type: 'OTHER' };
   }
+}
+
+// ============================================
+// ADMIN COMMANDS
+// ============================================
+
+async function handleAdminCommand(phone, message) {
+  const parts = message.trim().split(' ');
+  const command = parts[1]; // /admin [command]
+  const arg = parts[2]; // Argumento opcional
+  
+  console.log(`🔐 Admin command from ${phone}: ${message}`);
+  
+  try {
+    switch(command) {
+      case 'reset':
+        if (arg === 'me') {
+          // Resetear el usuario admin
+          await resetUser(phone);
+          await sendWhatsApp(phone, '✅ Tu usuario fue reseteado. Envía "hola" para empezar de nuevo.');
+        } else if (arg && arg.startsWith('+')) {
+          // Resetear otro usuario
+          await resetUser(arg);
+          await sendWhatsApp(phone, `✅ Usuario ${arg} fue reseteado.`);
+        } else {
+          await sendWhatsApp(phone, '❌ Uso: /admin reset me\n o /admin reset +56912345678');
+        }
+        break;
+        
+      case 'delete':
+        if (arg && arg.startsWith('+')) {
+          await deleteUser(arg);
+          await sendWhatsApp(phone, `✅ Usuario ${arg} fue eliminado completamente.`);
+        } else {
+          await sendWhatsApp(phone, '❌ Uso: /admin delete +56912345678');
+        }
+        break;
+        
+      case 'users':
+        const userCount = await pool.query('SELECT COUNT(*) as total FROM users');
+        const total = userCount.rows[0].total;
+        await sendWhatsApp(phone, `📊 Total usuarios: ${total}`);
+        break;
+        
+      case 'stats':
+        const stats = await getSystemStats();
+        await sendWhatsApp(phone, 
+          `📊 Estadísticas del Sistema:\n\n` +
+          `👥 Usuarios: ${stats.totalUsers}\n` +
+          `✅ Onboarding completo: ${stats.completedOnboarding}\n` +
+          `💸 Total gastos: $${stats.totalExpenses.toLocaleString('es-CL')}\n` +
+          `💰 Total ingresos: $${stats.totalIncome.toLocaleString('es-CL')}\n` +
+          `📝 Total transacciones: ${stats.totalTransactions}`
+        );
+        break;
+        
+      case 'user':
+        if (arg && arg.startsWith('+')) {
+          const userInfo = await getUserInfo(arg);
+          if (!userInfo) {
+            await sendWhatsApp(phone, `❌ Usuario ${arg} no encontrado.`);
+          } else {
+            await sendWhatsApp(phone,
+              `👤 Info Usuario: ${arg}\n\n` +
+              `ID: ${userInfo.id}\n` +
+              `Onboarding: ${userInfo.onboarding_complete ? '✅ Completo' : '❌ Incompleto'}\n` +
+              `Ingreso: $${(userInfo.monthly_income || 0).toLocaleString('es-CL')}\n` +
+              `Meta ahorro: $${(userInfo.savings_goal || 0).toLocaleString('es-CL')}\n` +
+              `Gastos este mes: $${userInfo.monthlyExpenses.toLocaleString('es-CL')}\n` +
+              `Ingresos este mes: $${userInfo.monthlyIncome.toLocaleString('es-CL')}\n` +
+              `Total transacciones: ${userInfo.totalTransactions}`
+            );
+          }
+        } else {
+          await sendWhatsApp(phone, '❌ Uso: /admin user +56912345678');
+        }
+        break;
+        
+      default:
+        await sendWhatsApp(phone,
+          '🔐 Comandos Admin:\n\n' +
+          '/admin reset me → Resetear tu usuario\n' +
+          '/admin reset +56... → Resetear otro usuario\n' +
+          '/admin delete +56... → Eliminar usuario\n' +
+          '/admin users → Total usuarios\n' +
+          '/admin stats → Estadísticas sistema\n' +
+          '/admin user +56... → Info de usuario'
+        );
+    }
+  } catch (error) {
+    console.error('❌ Admin command error:', error);
+    await sendWhatsApp(phone, `❌ Error ejecutando comando: ${error.message}`);
+  }
+}
+
+// Admin helper functions
+async function resetUser(phone) {
+  const result = await pool.query('SELECT id FROM users WHERE phone = $1', [phone]);
+  if (result.rows.length > 0) {
+    const userId = result.rows[0].id;
+    
+    // Eliminar todas las transacciones
+    await pool.query('DELETE FROM transactions WHERE user_id = $1', [userId]);
+    
+    // Eliminar presupuestos
+    await pool.query('DELETE FROM budgets WHERE user_id = $1', [userId]);
+    
+    // Eliminar alertas
+    await pool.query('DELETE FROM financial_alerts WHERE user_id = $1', [userId]);
+    
+    // Resetear campos de onboarding
+    await pool.query(
+      `UPDATE users 
+       SET monthly_income = NULL, 
+           savings_goal = NULL, 
+           onboarding_complete = false, 
+           onboarding_step = 'awaiting_income'
+       WHERE id = $1`,
+      [userId]
+    );
+  }
+}
+
+async function deleteUser(phone) {
+  // Las foreign keys con ON DELETE CASCADE se encargan del resto
+  await pool.query('DELETE FROM users WHERE phone = $1', [phone]);
+}
+
+async function getSystemStats() {
+  const users = await pool.query('SELECT COUNT(*) as total FROM users');
+  const completed = await pool.query('SELECT COUNT(*) as total FROM users WHERE onboarding_complete = true');
+  
+  const expenses = await pool.query(
+    'SELECT COALESCE(SUM(amount), 0) as total FROM transactions WHERE is_income = false'
+  );
+  
+  const income = await pool.query(
+    'SELECT COALESCE(SUM(amount), 0) as total FROM transactions WHERE is_income = true'
+  );
+  
+  const transactions = await pool.query('SELECT COUNT(*) as total FROM transactions');
+  
+  return {
+    totalUsers: parseInt(users.rows[0].total),
+    completedOnboarding: parseInt(completed.rows[0].total),
+    totalExpenses: parseFloat(expenses.rows[0].total),
+    totalIncome: parseFloat(income.rows[0].total),
+    totalTransactions: parseInt(transactions.rows[0].total)
+  };
+}
+
+async function getUserInfo(phone) {
+  const user = await pool.query('SELECT * FROM users WHERE phone = $1', [phone]);
+  if (user.rows.length === 0) return null;
+  
+  const userData = user.rows[0];
+  
+  const monthlyExpenses = await pool.query(
+    `SELECT COALESCE(SUM(amount), 0) as total 
+     FROM transactions 
+     WHERE user_id = $1 
+     AND is_income = false 
+     AND date >= date_trunc('month', CURRENT_DATE)`,
+    [userData.id]
+  );
+  
+  const monthlyIncome = await pool.query(
+    `SELECT COALESCE(SUM(amount), 0) as total 
+     FROM transactions 
+     WHERE user_id = $1 
+     AND is_income = true 
+     AND date >= date_trunc('month', CURRENT_DATE)`,
+    [userData.id]
+  );
+  
+  const totalTx = await pool.query(
+    'SELECT COUNT(*) as total FROM transactions WHERE user_id = $1',
+    [userData.id]
+  );
+  
+  return {
+    ...userData,
+    monthlyExpenses: parseFloat(monthlyExpenses.rows[0].total),
+    monthlyIncome: parseFloat(monthlyIncome.rows[0].total),
+    totalTransactions: parseInt(totalTx.rows[0].total)
+  };
 }
 
 // ============================================
