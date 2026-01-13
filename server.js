@@ -158,14 +158,42 @@ async function processUserMessage(phone, message) {
       return;
     }
     
+    // 3. Verificar si estamos esperando respuesta de income update
+    if (user.last_income_update_prompt) {
+      const minutesSincePrompt = 
+        (Date.now() - new Date(user.last_income_update_prompt)) / (1000 * 60);
+      
+      // Si preguntamos hace menos de 5 minutos
+      if (minutesSincePrompt < 5) {
+        const msgLower = message.toLowerCase().trim();
+        
+        // Detectar aceptación
+        if (['si', 'sí', 'dale', 'ok', 'okay', 'actualizar', 'acepto', 'correcto', 'yes'].includes(msgLower)) {
+          console.log(`✅ Income update: User accepted (context: ${minutesSincePrompt.toFixed(1)} min ago)`);
+          await handleIncomeUpdateResponse(user, { accepted: true });
+          return;
+        }
+        
+        // Detectar rechazo
+        if (['no', 'nope', 'mejor no', 'después', 'mantener', 'nop', 'nel'].includes(msgLower)) {
+          console.log(`❌ Income update: User declined (context: ${minutesSincePrompt.toFixed(1)} min ago)`);
+          await handleIncomeUpdateResponse(user, { accepted: false });
+          return;
+        }
+        
+        // Si no es sí/no claro, continuar con clasificación normal
+        console.log(`⚠️ Income update context active but message ambiguous: "${message}"`);
+      }
+    }
+    
     console.log(`🤖 Classifying intent with Claude...`);
     
-    // 3. Usuario completo - clasificar intención con Claude
+    // 4. Usuario completo - clasificar intención con Claude
     const intent = await classifyIntent(message, user);
     
     console.log(`🎯 Intent detected: ${intent.type}`);
     
-    // 4. Ejecutar acción según intención
+    // 5. Ejecutar acción según intención
     switch(intent.type) {
       case 'TRANSACTION':
         await handleTransaction(user, intent.data);
