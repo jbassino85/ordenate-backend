@@ -213,6 +213,9 @@ async function processUserMessage(phone, message) {
       case 'UPDATE_INCOME_RESPONSE':
         await handleIncomeUpdateResponse(user, intent.data);
         break;
+      case 'RECLASSIFY_TRANSACTION':
+        await handleReclassifyTransaction(user, intent.data);
+        break;
       default:
         await sendWhatsApp(phone, 
           '🤔 Mmm, no te entendí. Prueba con:\n\n' +
@@ -299,7 +302,18 @@ CATEGORÍAS POSIBLES:
    Ejemplos de RECHAZO: "no", "nope", "mejor no", "después", "mantener"
    Debe retornar: { accepted: true/false }
    
-7. OTHER: Otro tipo
+7. RECLASSIFY_TRANSACTION: Reclasificar última transacción a otra categoría
+   Palabras clave: "ese gasto debería ir en", "debería ser", "cambiar a", "reclasificar", 
+                   "eso era", "clasificar como", "mover a"
+   Ejemplos: 
+   - "Ese gasto debería ir en comida"
+   - "Debería ser transporte"
+   - "Cambiar a entretenimiento"
+   - "Eso era servicios"
+   - "Clasificar como salud"
+   Debe retornar: { new_category: "nombre_categoria" }
+   
+8. OTHER: Otro tipo
 
 MODISMOS CHILENOS:
 - "lucas/luca/lukas" = miles de pesos (ej: "5 lucas" = 5000)
@@ -686,6 +700,49 @@ const confirmations = {
 };
 
 // ============================================
+// CATEGORIES MANAGEMENT
+// ============================================
+
+// Obtener categorías válidas desde DB
+async function getValidCategories(type = 'expense') {
+  const result = await pool.query(
+    `SELECT name, emoji FROM categories 
+     WHERE type = $1 AND is_active = true 
+     ORDER BY display_order`,
+    [type]
+  );
+  return result.rows;
+}
+
+// Validar si categoría existe
+async function isValidCategory(categoryName, type = 'expense') {
+  const result = await pool.query(
+    `SELECT EXISTS(
+       SELECT 1 FROM categories 
+       WHERE LOWER(name) = LOWER($1) AND type = $2 AND is_active = true
+     ) as exists`,
+    [categoryName, type]
+  );
+  return result.rows[0].exists;
+}
+
+// Obtener emoji de categoría
+async function getCategoryEmoji(categoryName, type = 'expense') {
+  const result = await pool.query(
+    `SELECT emoji FROM categories 
+     WHERE LOWER(name) = LOWER($1) AND type = $2 AND is_active = true`,
+    [categoryName, type]
+  );
+  return result.rows[0]?.emoji || '📦';
+}
+
+// Formatear lista de categorías para mostrar al usuario
+async function formatCategoriesList(type = 'expense') {
+  const categories = await getValidCategories(type);
+  return categories.map(c => `${c.emoji} ${c.name}`).join('\n');
+}
+
+// ============================================
 // INCOME MANAGEMENT
 // ============================================
 
@@ -877,6 +934,97 @@ async function handleIncomeUpdateResponse(user, data) {
       `Te preguntaré de nuevo en unos meses. Si cambias de opinión, puedes decirme: "Actualizar ingreso a [monto]"`
     );
   }
+}
+
+// Manejar reclasificación de última transacción
+async function handleReclassifyTransaction(user, data) {
+  const { new_category } = data;
+  
+  if (!new_category) {
+    await sendWhatsApp(user.phone, 
+      '🤔 No entendí a qué categoría quieres cambiar el gasto.\n\n' +
+      'Prueba: "Ese gasto debería ir en comida"'
+    );
+    return;
+  }
+  
+  // Normalizar categoría
+  const categoryLower = new_category.toLowerCase().trim();
+  
+  // Validar que la categoría existe
+  const isValid = await isValidCategory(categoryLower, 'expense');
+  
+  if (!isValid) {
+    // Categoría no válida - mostrar lista completa
+    const categoriesList = await formatCategoriesList('expense');
+    
+    await sendWhatsApp(user.phone,
+      `🤔 No reconozco la categoría "${new_category}".\n\n` +
+      `Categorías válidas:\n\n${categoriesList}`
+    );
+    return;
+  }
+  
+  // Buscar última transacción del usuario (< 5 minutos)
+  const result = await pool.query(
+    `SELECT id, category, amount, description, is_income 
+     FROM transactions
+     WHERE user_id = $1 
+       AND created_at >= NOW() - INTERVAL '5 minutes'
+     ORDER BY created_at DESC
+     LIMIT 1`,
+    [user.id]
+  );
+  
+  if (result.rows.length === 0) {
+    await sendWhatsApp(user.phone,
+      '🤔 No encontré gastos recientes para reclasificar.\n\n' +
+      '¿Registraste un gasto hace poco? (Solo puedo reclasificar gastos de los últimos 5 minutos)'
+    );
+    return;
+  }
+  
+  const transaction = result.rows[0];
+  
+  // Verificar que no sea un ingreso
+  if (transaction.is_income) {
+    await sendWhatsApp(user.phone,
+      '⚠️ Eso fue un ingreso, no un gasto.\n\n' +
+      'Solo puedo reclasificar gastos.'
+    );
+    return;
+  }
+  
+  const oldCategory = transaction.category;
+  
+  // Verificar si ya está en esa categoría
+  if (oldCategory.toLowerCase() === categoryLower) {
+    await sendWhatsApp(user.phone,
+      `✓ Ya está clasificado en ${categoryLower}.`
+    );
+    return;
+  }
+  
+  // Actualizar categoría
+  await pool.query(
+    'UPDATE transactions SET category = $1 WHERE id = $2',
+    [categoryLower, transaction.id]
+  );
+  
+  console.log(`♻️ Transaction reclassified: ${oldCategory} → ${categoryLower}`);
+  
+  // Obtener emojis
+  const oldEmoji = await getCategoryEmoji(oldCategory, 'expense');
+  const newEmoji = await getCategoryEmoji(categoryLower, 'expense');
+  
+  // Confirmar
+  let reply = `Ok! Reclasifiqué de ${oldEmoji} ${oldCategory} → ${newEmoji} ${categoryLower} ✅\n\n`;
+  reply += `💵 $${Number(transaction.amount).toLocaleString('es-CL')}`;
+  if (transaction.description) {
+    reply += `\n📝 ${transaction.description}`;
+  }
+  
+  await sendWhatsApp(user.phone, reply);
 }
 
 // ============================================
