@@ -1852,13 +1852,14 @@ async function handleFinancialAdvice(user, data, originalQuestion) {
   // Obtener gastos del mes actual por categoría
   const spentResult = await pool.query(
     `SELECT 
-       category,
-       SUM(amount) as total
-     FROM transactions 
-     WHERE user_id = $1 
-       AND date >= date_trunc('month', CURRENT_DATE)
-       AND is_income = false
-     GROUP BY category
+       c.name as category,
+       SUM(t.amount) as total
+     FROM transactions t
+     JOIN categories c ON t.category_id = c.id
+     WHERE t.user_id = $1 
+       AND t.date >= date_trunc('month', CURRENT_DATE)
+       AND t.is_income = false
+     GROUP BY c.name
      ORDER BY total DESC`,
     [user.id]
   );
