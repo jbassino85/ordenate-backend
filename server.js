@@ -715,7 +715,10 @@ async function handleOnboarding(user, message) {
       break;
     
     case 'awaiting_income':
+      console.log(`💰 Processing income amount: ${amount}`);
+      
       if (!amount || amount < 50000) {
+        console.log(`❌ Invalid amount: ${amount}`);
         await sendWhatsApp(user.phone, 
           '🤔 Mmm, no pude detectar el monto.\n\n' +
           'Dime tu ingreso mensual.\n' +
@@ -724,20 +727,32 @@ async function handleOnboarding(user, message) {
         return;
       }
       
+      console.log(`✅ Valid amount, updating user...`);
+      
       // Guardar ingreso y pasar a meta de ahorro
-      await pool.query(
-        'UPDATE users SET monthly_income = $1, onboarding_step = $2 WHERE id = $3',
-        [amount, 'awaiting_savings_goal', user.id]
-      );
+      try {
+        await pool.query(
+          'UPDATE users SET monthly_income = $1, onboarding_step = $2 WHERE id = $3',
+          [amount, 'awaiting_savings_goal', user.id]
+        );
+        console.log(`✅ User updated successfully`);
+      } catch (error) {
+        console.error(`❌ Error updating user:`, error);
+        throw error;
+      }
       
+      console.log(`🎲 Getting random confirmation...`);
       const incomeConfirm = randomVariation(confirmations.onboardingIncome)();
+      console.log(`✅ Confirmation: ${incomeConfirm}`);
       
+      console.log(`📤 Sending savings goal question...`);
       await sendWhatsApp(user.phone,
         `${incomeConfirm} $${amount.toLocaleString('es-CL')}\n\n` +
         '🎯 ¿Cuánto quieres ahorrar al mes?\n\n' +
         'Tip: Lo ideal es ahorrar entre 10-20% de lo que ganas.\n' +
         `(En tu caso, entre $${(amount * 0.1).toLocaleString('es-CL')} y $${(amount * 0.2).toLocaleString('es-CL')})`
       );
+      console.log(`✅ Message sent successfully`);
       break;
       
     case 'awaiting_savings_goal':
