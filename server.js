@@ -101,6 +101,9 @@ app.post('/webhook', async (req, res) => {
 // Admin phone (hardcoded)
 const ADMIN_PHONE = '+56982391528';
 
+// Feature flags
+const SHOW_PREMIUM_MESSAGE = process.env.SHOW_PREMIUM_MESSAGE === 'true';
+
 async function processUserMessage(phone, message) {
   try {
     console.log(`🔄 Processing message from ${phone}: "${message}"`);
@@ -1145,9 +1148,8 @@ async function handleQuery(user, data) {
   
   await sendWhatsApp(user.phone, reply);
   
-  // NOTA: Este mensaje de upgrade solo se muestra en queries (consultas de gastos)
-  // TODO: Personalizar mensaje según contexto cuando hagamos split free/premium
-  if (user.plan === 'free') {
+  // Mensaje de upgrade a Premium (solo si está habilitado)
+  if (SHOW_PREMIUM_MESSAGE && user.plan === 'free') {
     setTimeout(async () => {
       await sendWhatsApp(user.phone, 
         '💎 ¿Quieres ver gráficos y análisis detallados?\n\nUpgrade a Premium por $10/mes\nEscribe "premium" para más info'
