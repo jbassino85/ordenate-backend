@@ -1414,23 +1414,26 @@ async function handleTransaction(user, data) {
   const categoryType = is_income ? 'income' : 'expense';
   
   const categoryResult = await pool.query(
-    `SELECT id, emoji FROM categories 
+    `SELECT id, name, emoji FROM categories 
      WHERE LOWER(name) = $1 AND type = $2 AND is_active = true`,
     [categoryName, categoryType]
   );
   
+  let categoryId, categoryRealName, categoryEmoji;
   if (categoryResult.rows.length === 0) {
     console.error(`❌ Category not found: ${categoryName} (${categoryType})`);
     // Fallback a "otros"
     const otrosResult = await pool.query(
-      `SELECT id, emoji FROM categories WHERE name = 'otros' AND type = $1`,
+      `SELECT id, name, emoji FROM categories WHERE name = 'otros' AND type = $1`,
       [categoryType]
     );
-    var categoryId = otrosResult.rows[0].id;
-    var categoryEmoji = otrosResult.rows[0].emoji;
+    categoryId = otrosResult.rows[0].id;
+    categoryRealName = otrosResult.rows[0].name;
+    categoryEmoji = otrosResult.rows[0].emoji;
   } else {
-    var categoryId = categoryResult.rows[0].id;
-    var categoryEmoji = categoryResult.rows[0].emoji;
+    categoryId = categoryResult.rows[0].id;
+    categoryRealName = categoryResult.rows[0].name;
+    categoryEmoji = categoryResult.rows[0].emoji;
   }
   
   // Insertar transacción con category_id
@@ -1440,9 +1443,9 @@ async function handleTransaction(user, data) {
     [user.id, amount, categoryId, description || '', is_income || false]
   );
   
-  // Mensaje variado
+  // Mensaje variado con nombre real de BD y emoji
   const variations = is_income ? confirmations.income : confirmations.transaction;
-  const confirmMessage = randomVariation(variations)(categoryName);
+  const confirmMessage = randomVariation(variations)(`${categoryEmoji} ${categoryRealName}`);
   
   let reply = `${confirmMessage}\n\n`;
   reply += `💵 $${Number(amount).toLocaleString('es-CL')}\n`;
