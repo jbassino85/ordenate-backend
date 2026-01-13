@@ -13,6 +13,10 @@ const app = express();
 // SEGURIDAD - CONFIGURACIÓN
 // ============================================
 
+// Trust proxy - NECESARIO para Railway/Cloudflare
+// Permite que express-rate-limit identifique IPs correctamente
+app.set('trust proxy', 1);
+
 // Helmet: Headers de seguridad HTTP
 app.use(helmet());
 
