@@ -121,25 +121,24 @@ async function processUserMessage(phone, message) {
     // 2. Si no completó onboarding
     if (!user.onboarding_complete) {
       
-      // Si está en awaiting_income, enviar pregunta inicial
-      console.log(`🔍 Checking: user.onboarding_step="${user.onboarding_step}" === "awaiting_income" ? ${user.onboarding_step === 'awaiting_income'}`);
-      if (user.onboarding_step === 'awaiting_income') {
+      // Si está en awaiting_name (inicio), enviar pregunta inicial
+      console.log(`🔍 Checking: user.onboarding_step="${user.onboarding_step}" === "awaiting_name" ? ${user.onboarding_step === 'awaiting_name'}`);
+      if (user.onboarding_step === 'awaiting_name') {
         await sendWhatsApp(phone,
           '👋 ¡Hola! Soy Ordénate, tu asesor financiero personal.\n\n' +
           'Te voy a ayudar a:\n' +
           '✅ Controlar tus gastos\n' +
           '✅ Alcanzar tus metas de ahorro\n' +
           '✅ Tomar mejores decisiones con tu plata\n\n' +
-          'Para empezar, cuéntame...\n\n' +
-          '💰 ¿Cuánto ganas al mes aprox?\n' +
-          '(Puedes decir "800 lucas" o "$800000")'
+          'Para empezar...\n\n' +
+          '👤 ¿Cómo te llamas?'
         );
         
         // Cambiar step para que próximo mensaje se procese como respuesta
-        console.log(`🔄 Updating onboarding_step to awaiting_income_response...`);
+        console.log(`🔄 Updating onboarding_step to awaiting_name_response...`);
         await pool.query(
           'UPDATE users SET onboarding_step = $1 WHERE id = $2',
-          ['awaiting_income_response', user.id]
+          ['awaiting_name_response', user.id]
         );
         console.log(`✅ Step updated successfully`);
         return;
@@ -519,10 +518,11 @@ async function resetUser(phone) {
     // Resetear campos de onboarding
     await pool.query(
       `UPDATE users 
-       SET monthly_income = NULL, 
+       SET name = NULL,
+           monthly_income = NULL, 
            savings_goal = NULL, 
            onboarding_complete = false, 
-           onboarding_step = 'awaiting_income'
+           onboarding_step = 'awaiting_name'
        WHERE id = $1`,
       [userId]
     );
@@ -631,8 +631,8 @@ const confirmations = {
     () => `Excelente! Tu ingreso mensual:`
   ],
   alertIntro: [
-    () => `⚠️ Ojo con los gastos`,
-    () => `⚠️ Hey, te cuento algo`,
+    (name) => name ? `⚠️ Ojo ${name}, te cuento algo` : `⚠️ Ojo con los gastos`,
+    (name) => name ? `⚠️ Hey ${name}` : `⚠️ Hey, te cuento algo`,
     () => `⚠️ Mira esto`,
     () => `⚠️ Atención con el presupuesto`
   ]
@@ -684,9 +684,37 @@ async function handleOnboarding(user, message) {
   // Normalizar valores viejos
   let step = user.onboarding_step;
   if (step === 'responding_income') step = 'awaiting_income_response';
+  if (step === 'awaiting_income') step = 'awaiting_name'; // Migrar usuarios viejos
   
   switch(step) {
-    case 'awaiting_income_response':
+    case 'awaiting_name_response':
+      // Validar que no sea un número o muy corto
+      const name = message.trim();
+      if (name.length < 2 || /^\d+$/.test(name)) {
+        await sendWhatsApp(user.phone,
+          '🤔 Mmm, no detecté un nombre válido.\n\n' +
+          '¿Cómo te llamas?'
+        );
+        return;
+      }
+      
+      // Capitalizar primera letra
+      const capitalizedName = name.charAt(0).toUpperCase() + name.slice(1).toLowerCase();
+      
+      // Guardar nombre y pasar a pregunta de ingreso
+      await pool.query(
+        'UPDATE users SET name = $1, onboarding_step = $2 WHERE id = $3',
+        [capitalizedName, 'awaiting_income', user.id]
+      );
+      
+      await sendWhatsApp(user.phone,
+        `¡Genial ${capitalizedName}! 👋\n\n` +
+        '💰 ¿Cuánto ganas al mes aprox?\n' +
+        '(Puedes decir "800 lucas" o "$800000")'
+      );
+      break;
+    
+    case 'awaiting_income':
       if (!amount || amount < 50000) {
         await sendWhatsApp(user.phone, 
           '🤔 Mmm, no pude detectar el monto.\n\n' +
@@ -696,7 +724,7 @@ async function handleOnboarding(user, message) {
         return;
       }
       
-      // Guardar ingreso y pasar a siguiente step
+      // Guardar ingreso y pasar a meta de ahorro
       await pool.query(
         'UPDATE users SET monthly_income = $1, onboarding_step = $2 WHERE id = $3',
         [amount, 'awaiting_savings_goal', user.id]
@@ -706,7 +734,7 @@ async function handleOnboarding(user, message) {
       
       await sendWhatsApp(user.phone,
         `${incomeConfirm} $${amount.toLocaleString('es-CL')}\n\n` +
-        '🎯 Ahora cuéntame, ¿cuánto quieres ahorrar al mes?\n\n' +
+        '🎯 ¿Cuánto quieres ahorrar al mes?\n\n' +
         'Tip: Lo ideal es ahorrar entre 10-20% de lo que ganas.\n' +
         `(En tu caso, entre $${(amount * 0.1).toLocaleString('es-CL')} y $${(amount * 0.2).toLocaleString('es-CL')})`
       );
@@ -741,10 +769,15 @@ async function handleOnboarding(user, message) {
         [amount, user.id]
       );
       
+      // Recargar usuario para obtener nombre
+      const updatedUser = await pool.query('SELECT name FROM users WHERE id = $1', [user.id]);
+      const userName = updatedUser.rows[0].name || '';
+      const greeting = userName ? `¡Listo ${userName}!` : '¡Listo!';
+      
       const spendingBudget = income - amount;
       
       await sendWhatsApp(user.phone,
-        `🎉 ¡Listo! Ya está todo configurado:\n\n` +
+        `🎉 ${greeting} Ya está todo configurado:\n\n` +
         `💰 Ganas al mes: $${income.toLocaleString('es-CL')}\n` +
         `🎯 Meta de ahorro: $${amount.toLocaleString('es-CL')} (${((amount/income)*100).toFixed(0)}%)\n` +
         `💸 Tienes para gastar: $${spendingBudget.toLocaleString('es-CL')}\n\n` +
@@ -834,7 +867,7 @@ async function checkFinancialHealth(user) {
   if (percentageUsed > 70 && percentageUsed < 100) {
     shouldAlert = true;
     alertType = 'high_spending';
-    const alertIntro = randomVariation(confirmations.alertIntro)();
+    const alertIntro = randomVariation(confirmations.alertIntro)(user.name || '');
     alertMessage = `${alertIntro}\n\n` +
       `Llevas gastado $${totalSpent.toLocaleString('es-CL')} este mes (${percentageUsed.toFixed(0)}% de tu presupuesto).\n\n` +
       `💸 Tenías para gastar: $${spendingBudget.toLocaleString('es-CL')}\n` +
@@ -1064,7 +1097,8 @@ async function handleQuery(user, data) {
     };
     
     const catText = category ? ` - ${category.charAt(0).toUpperCase() + category.slice(1)}` : '';
-    let reply = `📊 Detalle ${periodText}${catText}:\n\n`;
+    const nameGreeting = user.name ? `${user.name}, aquí está tu ` : '';
+    let reply = `📊 ${nameGreeting}Detalle ${periodText}${catText}:\n\n`;
     
     // Mostrar cada categoría con sus transacciones
     Object.keys(byCategory).sort().forEach(cat => {
@@ -1122,7 +1156,8 @@ async function handleQuery(user, data) {
   }
   
   const catText = category ? ` - ${category.charAt(0).toUpperCase() + category.slice(1)}` : '';
-  let reply = `📊 Resumen ${periodText}${catText}:\n\n`;
+  const nameGreeting = user.name ? `${user.name}, aquí está tu ` : '';
+  let reply = `📊 ${nameGreeting}Resumen ${periodText}${catText}:\n\n`;
   
   let totalExpenses = 0;
   let totalIncome = 0;
@@ -1423,10 +1458,10 @@ async function getOrCreateUser(phone) {
   );
   
   if (result.rows.length === 0) {
-    // Usuario nuevo
+    // Usuario nuevo - empezar preguntando nombre
     result = await pool.query(
       'INSERT INTO users (phone, onboarding_complete, onboarding_step) VALUES ($1, false, $2) RETURNING *',
-      [phone, 'awaiting_income']
+      [phone, 'awaiting_name']
     );
   }
   
