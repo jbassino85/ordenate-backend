@@ -681,10 +681,9 @@ function extractAmount(text) {
 async function handleOnboarding(user, message) {
   const amount = extractAmount(message);
   
-  // Normalizar valores viejos
+  // Normalizar valores viejos (solo para casos edge legacy)
   let step = user.onboarding_step;
   if (step === 'responding_income') step = 'awaiting_income_response';
-  if (step === 'awaiting_income') step = 'awaiting_name'; // Migrar usuarios viejos
   
   switch(step) {
     case 'awaiting_name_response':
