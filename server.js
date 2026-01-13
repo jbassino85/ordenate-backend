@@ -192,7 +192,20 @@ async function classifyIntent(message, user) {
 
 CATEGORÍAS POSIBLES:
 1. TRANSACTION: Registrar gasto/ingreso
-   Ejemplos: "gasté 5 lucas en almuerzo", "ingresé 50 mil por freelance"
+   
+   GASTOS - Palabras clave: "gasté", "compré", "pagué", "me salió", "me costó"
+   Ejemplos: "gasté 5 lucas en almuerzo", "pagué 10000 en uber", "compré en Jumbo"
+   
+   INGRESOS - Palabras clave: "gané", "me pagaron", "cobré", "ingresé", "recibí", 
+   "me depositaron", "sueldo", "salario", "honorarios", "freelance", "cliente", "pago"
+   Ejemplos: 
+   - "Gané 30000 con un cliente web"
+   - "Me pagaron el sueldo 1500000"
+   - "Cobré 50000 por el proyecto"
+   - "Me depositaron 100000"
+   - "Ingresé 50 mil por freelance"
+   
+   IMPORTANTE: Si no hay palabra clave clara, asumir que es GASTO (default).
    
 2. QUERY: Consultar información
    Ejemplos: "¿cuánto gasté esta semana?", "mostrar mis gastos"
@@ -241,6 +254,11 @@ MODISMOS CHILENOS:
 CATEGORÍAS DE GASTOS:
 supermercados, comida, transporte, entretenimiento, salud, servicios, compras, hogar, educacion, otros
 
+CATEGORÍAS DE INGRESOS:
+sueldo, freelance, ventas, inversiones, otros
+
+Nota: Cuando is_income = true, usar categorías de ingresos. Cuando is_income = false, usar categorías de gastos.
+
 CONTEXTO TIENDAS CHILENAS (EJEMPLOS):
 Estas son tiendas comunes para ayudarte a categorizar, pero NO es una lista exhaustiva. 
 Si el usuario menciona una tienda que no está aquí, usa tu criterio inteligente para categorizarla.
@@ -281,15 +299,27 @@ IMPORTANTE: Si una tienda no está listada (ej: ChatGPT, OpenAI, Notion), usa tu
 general para categorizarla correctamente. Ejemplos: ChatGPT/OpenAI → servicios, 
 Notion → servicios, Gym local no listado → entretenimiento.
 
+EJEMPLOS DE CATEGORIZACIÓN DE INGRESOS:
+- "Me pagaron el sueldo 1500000" → category: "sueldo", is_income: true
+- "Gané 30000 con un cliente web" → category: "freelance", is_income: true
+- "Cobré 50000 por el proyecto" → category: "freelance", is_income: true
+- "Me depositaron honorarios 100000" → category: "freelance", is_income: true
+- "Vendí mi bici en 80000" → category: "ventas", is_income: true
+- "Recibí dividendos 20000" → category: "inversiones", is_income: true
+
 REGLAS PARA EL CAMPO "description":
-- Capitalizar primera letra del comercio/lugar
-- NO incluir prefijos como "gasto en", "Gasto en", "compra en"
-- Solo el nombre del lugar capitalizado
+- Capitalizar primera letra del comercio/lugar/fuente
+- NO incluir prefijos como "gasto en", "Gasto en", "ingreso de"
+- Solo el nombre capitalizado
 - Ejemplos correctos:
+  GASTOS:
   * Input: "gasté en uber" → Output description: "Uber"
   * Input: "gaste 5000 en mcdonald's" → Output description: "McDonald's"
-  * Input: "compre en walmart" → Output description: "Walmart"
   * Input: "almuerzo" → Output description: "Almuerzo"
+  INGRESOS:
+  * Input: "me pagaron el sueldo" → Output description: "Sueldo"
+  * Input: "cobré de cliente web" → Output description: "Cliente web"
+  * Input: "honorarios proyecto" → Output description: "Proyecto"
 
 FORMATO DE RESPUESTA:
 Responde SOLO con JSON válido (sin markdown, sin explicaciones):
@@ -367,6 +397,50 @@ EJEMPLOS DE QUERIES:
 }
 
 // ============================================
+// HELPERS DE VARIACIÓN
+// ============================================
+
+// Obtener variación aleatoria de un array
+function randomVariation(array) {
+  return array[Math.floor(Math.random() * array.length)];
+}
+
+// Variaciones de confirmaciones
+const confirmations = {
+  transaction: [
+    (category) => `¡Listo! Ya agregué el gasto de ${category}.`,
+    (category) => `Anotado! Gasto de ${category} registrado.`,
+    (category) => `Ok, guardé el gasto de ${category}.`,
+    (category) => `Dale, ya quedó el gasto de ${category}.`,
+    (category) => `Perfecto, gasto de ${category} anotado.`
+  ],
+  income: [
+    (category) => `¡Genial! Ya agregué el ingreso de ${category}.`,
+    (category) => `Dale! Ingreso de ${category} anotado.`,
+    (category) => `Perfecto, ingreso de ${category} guardado.`,
+    (category) => `Listo! Ya quedó el ingreso de ${category}.`
+  ],
+  budget: [
+    (category) => `¡Listo! Presupuesto de ${category} configurado.`,
+    (category) => `Dale! Ya está el presupuesto de ${category}.`,
+    (category) => `Perfecto! Presupuesto de ${category} guardado.`,
+    (category) => `Ok! Ya quedó el presupuesto de ${category}.`
+  ],
+  onboardingIncome: [
+    () => `¡Dale! Tu ingreso mensual:`,
+    () => `Perfecto! Tu ingreso:`,
+    () => `Genial! Ganas al mes:`,
+    () => `Excelente! Tu ingreso mensual:`
+  ],
+  alertIntro: [
+    () => `⚠️ Ojo con los gastos`,
+    () => `⚠️ Hey, te cuento algo`,
+    () => `⚠️ Mira esto`,
+    () => `⚠️ Atención con el presupuesto`
+  ]
+};
+
+// ============================================
 // ONBOARDING CONVERSACIONAL
 // ============================================
 
@@ -430,8 +504,10 @@ async function handleOnboarding(user, message) {
         [amount, 'awaiting_savings_goal', user.id]
       );
       
+      const incomeConfirm = randomVariation(confirmations.onboardingIncome)();
+      
       await sendWhatsApp(user.phone,
-        `¡Dale! Tu ingreso mensual: $${amount.toLocaleString('es-CL')}\n\n` +
+        `${incomeConfirm} $${amount.toLocaleString('es-CL')}\n\n` +
         '🎯 Ahora cuéntame, ¿cuánto quieres ahorrar al mes?\n\n' +
         'Tip: Lo ideal es ahorrar entre 10-20% de lo que ganas.\n' +
         `(En tu caso, entre $${(amount * 0.1).toLocaleString('es-CL')} y $${(amount * 0.2).toLocaleString('es-CL')})`
@@ -560,7 +636,8 @@ async function checkFinancialHealth(user) {
   if (percentageUsed > 70 && percentageUsed < 100) {
     shouldAlert = true;
     alertType = 'high_spending';
-    alertMessage = `⚠️ Ojo con los gastos\n\n` +
+    const alertIntro = randomVariation(confirmations.alertIntro)();
+    alertMessage = `${alertIntro}\n\n` +
       `Llevas gastado $${totalSpent.toLocaleString('es-CL')} este mes (${percentageUsed.toFixed(0)}% de tu presupuesto).\n\n` +
       `💸 Tenías para gastar: $${spendingBudget.toLocaleString('es-CL')}\n` +
       `💰 Te quedan: $${(spendingBudget - totalSpent).toLocaleString('es-CL')}\n\n` +
@@ -660,8 +737,12 @@ async function handleTransaction(user, data) {
     [user.id, amount, category || 'otros', description || '', is_income || false]
   );
   
-  const emoji = is_income ? '💰' : '💸';
-  let reply = `¡Listo! Ya agregué ${is_income ? 'el ingreso' : 'el gasto'} de ${(category || 'otros').toLowerCase()}.\n\n`;
+  // Mensaje variado
+  const categoryName = (category || 'otros').toLowerCase();
+  const variations = is_income ? confirmations.income : confirmations.transaction;
+  const confirmMessage = randomVariation(variations)(categoryName);
+  
+  let reply = `${confirmMessage}\n\n`;
   reply += `💵 $${Number(amount).toLocaleString('es-CL')}\n`;
   if (description) reply += `📝 ${description}\n`;
   
@@ -766,6 +847,8 @@ async function handleQuery(user, data) {
     
     // Emojis por categoría
     const categoryEmojis = {
+      // Gastos
+      supermercados: '🛒',
       comida: '🍕',
       transporte: '🚗',
       entretenimiento: '🎬',
@@ -774,6 +857,11 @@ async function handleQuery(user, data) {
       compras: '🛍️',
       hogar: '🏠',
       educacion: '📚',
+      // Ingresos
+      sueldo: '💰',
+      freelance: '💼',
+      ventas: '💵',
+      inversiones: '📈',
       otros: '📦'
     };
     
@@ -890,8 +978,10 @@ async function handleBudget(user, data) {
     [user.id, category, amount]
   );
   
+  const budgetConfirm = randomVariation(confirmations.budget)(category);
+  
   await sendWhatsApp(user.phone,
-    `¡Listo! Presupuesto de ${category} configurado.\n\n💰 $${Number(amount).toLocaleString('es-CL')} al mes\n\nTe aviso cuando llegues al 80% y 100%.`
+    `${budgetConfirm}\n\n💰 $${Number(amount).toLocaleString('es-CL')} al mes\n\nTe aviso cuando llegues al 80% y 100%.`
   );
 }
 
@@ -911,6 +1001,8 @@ async function handleBudgetStatus(user, data) {
   
   // Emojis por categoría
   const categoryEmojis = {
+    // Gastos
+    supermercados: '🛒',
     comida: '🍕',
     transporte: '🚗',
     entretenimiento: '🎬',
@@ -919,6 +1011,11 @@ async function handleBudgetStatus(user, data) {
     compras: '🛍️',
     hogar: '🏠',
     educacion: '📚',
+    // Ingresos
+    sueldo: '💰',
+    freelance: '💼',
+    ventas: '💵',
+    inversiones: '📈',
     otros: '📦'
   };
   
