@@ -4,8 +4,35 @@ const bodyParser = require('body-parser');
 const { Pool } = require('pg');
 const Anthropic = require('@anthropic-ai/sdk');
 const twilio = require('twilio');
+const rateLimit = require('express-rate-limit');
+const helmet = require('helmet');
 
 const app = express();
+
+// ============================================
+// SEGURIDAD - CONFIGURACIÓN
+// ============================================
+
+// Helmet: Headers de seguridad HTTP
+app.use(helmet());
+
+// Rate Limiting para proteger contra DDoS
+const webhookLimiter = rateLimit({
+  windowMs: 1 * 60 * 1000, // 1 minuto
+  max: 100, // máximo 100 requests por minuto por IP (Twilio puede enviar muchos)
+  message: 'Too many requests',
+  standardHeaders: true,
+  legacyHeaders: false,
+});
+
+const generalLimiter = rateLimit({
+  windowMs: 1 * 60 * 1000,
+  max: 20, // más restrictivo para otros endpoints
+  message: 'Too many requests',
+  standardHeaders: true,
+  legacyHeaders: false,
+});
+
 app.use(bodyParser.urlencoded({ extended: false }));
 app.use(bodyParser.json());
 
@@ -43,42 +70,53 @@ const twilioClient = twilio(
 // WEBHOOK ENDPOINTS
 // ============================================
 
-// Health check
+// Root endpoint - NO mostrar información del backend (seguridad)
 app.get('/', (req, res) => {
-  res.json({ 
-    status: 'ok', 
-    service: 'Ordenate Backend',
-    timestamp: new Date().toISOString()
-  });
+  res.status(404).send('Not Found');
 });
 
-// Admin: Reset user onboarding
-app.get('/admin/reset-user/:phone', async (req, res) => {
+// Health check seguro - sin exponer detalles sensibles
+app.get('/health', generalLimiter, async (req, res) => {
   try {
-    const phone = req.params.phone;
+    // Verificar DB sin exponer detalles de conexión
+    await pool.query('SELECT 1');
     
-    const result = await pool.query(
-      'UPDATE users SET onboarding_step = $1 WHERE phone = $2 RETURNING *',
-      ['awaiting_income', phone]
-    );
-    
-    if (result.rows.length === 0) {
-      res.json({ error: 'User not found' });
-    } else {
-      res.json({ 
-        success: true, 
-        user: result.rows[0],
-        message: 'User reset to awaiting_income'
-      });
-    }
+    res.json({
+      status: 'healthy',
+      timestamp: new Date().toISOString()
+    });
   } catch (error) {
-    res.json({ error: error.message });
+    res.status(503).json({
+      status: 'unhealthy',
+      timestamp: new Date().toISOString()
+    });
   }
 });
 
-// Twilio webhook (recibir mensajes)
-app.post('/webhook', async (req, res) => {
+// Twilio webhook (recibir mensajes) - CON VALIDACIÓN DE FIRMA
+app.post('/webhook', webhookLimiter, async (req, res) => {
   try {
+    // ============================================
+    // VALIDACIÓN DE FIRMA TWILIO (CRÍTICO)
+    // ============================================
+    const twilioSignature = req.headers['x-twilio-signature'];
+    const url = `https://api.ordenate.ai/webhook`;
+    
+    // Validar que el request viene realmente de Twilio
+    const requestIsValid = twilio.validateRequest(
+      process.env.TWILIO_AUTH_TOKEN,
+      twilioSignature,
+      url,
+      req.body
+    );
+    
+    if (!requestIsValid) {
+      console.log('⚠️ SECURITY: Invalid Twilio signature - request blocked');
+      console.log('   From IP:', req.ip);
+      console.log('   Headers:', req.headers);
+      return res.status(403).send('Forbidden');
+    }
+    
     const message = req.body.Body;
     const from = req.body.From.replace('whatsapp:', ''); // Quitar prefijo "whatsapp:"
     
