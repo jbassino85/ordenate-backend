@@ -113,11 +113,14 @@ async function processUserMessage(phone, message) {
       console.log(`🔍 Checking: user.onboarding_step="${user.onboarding_step}" === "awaiting_income" ? ${user.onboarding_step === 'awaiting_income'}`);
       if (user.onboarding_step === 'awaiting_income') {
         await sendWhatsApp(phone,
-          '👋 ¡Hola! Bienvenido a Ordénate!\n\n' +
-          'Para brindarte un mejor servicio como tu asesor financiero, ' +
-          'necesito conocer tu situación financiera.\n\n' +
-          '💰 ¿Cuál es tu ingreso mensual aproximado?\n' +
-          '(Puedes responder en miles, ej: "800 lucas" o "$800000")'
+          '👋 ¡Hola! Soy Ordénate, tu asesor financiero personal.\n\n' +
+          'Te voy a ayudar a:\n' +
+          '✅ Controlar tus gastos\n' +
+          '✅ Alcanzar tus metas de ahorro\n' +
+          '✅ Tomar mejores decisiones con tu plata\n\n' +
+          'Para empezar, cuéntame...\n\n' +
+          '💰 ¿Cuánto ganas al mes aprox?\n' +
+          '(Puedes decir "800 lucas" o "$800000")'
         );
         
         // Cambiar step para que próximo mensaje se procese como respuesta
@@ -162,11 +165,11 @@ async function processUserMessage(phone, message) {
         break;
       default:
         await sendWhatsApp(phone, 
-          '🤔 No entendí tu mensaje. Puedes decir:\n\n' +
-          '💸 "Gasté $5000 en almuerzo"\n' +
+          '🤔 Mmm, no te entendí. Prueba con:\n\n' +
+          '💸 "Gasté 5000 en almuerzo"\n' +
           '📊 "¿Cuánto gasté esta semana?"\n' +
-          '💰 "Quiero gastar máximo $100000 en comida"\n' +
-          '💡 "¿Cómo puedo ahorrar más?"'
+          '💰 "Máximo 100000 en comida"\n' +
+          '💡 "¿Cómo ahorro más?"'
         );
     }
   } catch (error) {
@@ -236,7 +239,47 @@ MODISMOS CHILENOS:
 - "chaucha" = poco dinero
 
 CATEGORÍAS DE GASTOS:
-comida, transporte, entretenimiento, salud, servicios, compras, hogar, educacion, otros
+supermercados, comida, transporte, entretenimiento, salud, servicios, compras, hogar, educacion, otros
+
+CONTEXTO TIENDAS CHILENAS (EJEMPLOS):
+Estas son tiendas comunes para ayudarte a categorizar, pero NO es una lista exhaustiva. 
+Si el usuario menciona una tienda que no está aquí, usa tu criterio inteligente para categorizarla.
+
+SUPERMERCADOS:
+Jumbo, Lider, Santa Isabel, Unimarc, Tottus, Acuenta, Ekono, Alvi, Montserrat, Mayor
+
+COMIDA (restaurantes, delivery, cafeterías):
+Starbucks, Dunkin, Doggis, Juan Maestro, Telepizza, Papa John's, McDonald's, 
+Burger King, KFC, PedidosYa, Uber Eats, Rappi, Cornershop
+
+TRANSPORTE:
+Copec, Shell, Petrobras, Terpel, Enex, Transbank (TAG), EasyPay, Metro, 
+Uber, Cabify, DiDi, Beat, Turbus, Pullman, Tur Bus
+
+SALUD:
+Cruz Verde, Salcobrand, Ahumada, Dr. Simi, Knop, Integramédica, RedSalud, 
+Clínica Alemana, UC Christus
+
+COMPRAS (retail, online):
+Falabella, Paris, Ripley, La Polar, Hites, Mercado Libre, AliExpress
+
+SERVICIOS (telefonía, internet, utilities):
+Entel, Movistar, Claro, WOM, VTR, Mundo Pacifico, CGE, Enel, Chilectra, 
+Metrogas, Lipigas, Gasco, Aguas Andinas, ESVAL
+
+ENTRETENIMIENTO (cine, streaming, gym):
+Cinemark, Cineplanet, Cinépolis, Hoyts, Netflix, Spotify, Disney+, 
+Amazon Prime, Sportlife, Smart Fit, Pacific
+
+HOGAR (mejoramiento, construcción):
+Sodimac, Easy, Homecenter, Corona, Construmart
+
+EDUCACIÓN:
+Universidad, Instituto, CFT, Colegio, Jardín
+
+IMPORTANTE: Si una tienda no está listada (ej: ChatGPT, OpenAI, Notion), usa tu conocimiento 
+general para categorizarla correctamente. Ejemplos: ChatGPT/OpenAI → servicios, 
+Notion → servicios, Gym local no listado → entretenimiento.
 
 REGLAS PARA EL CAMPO "description":
 - Capitalizar primera letra del comercio/lugar
@@ -374,8 +417,8 @@ async function handleOnboarding(user, message) {
     case 'awaiting_income_response':
       if (!amount || amount < 50000) {
         await sendWhatsApp(user.phone, 
-          '🤔 No detecté un monto válido.\n\n' +
-          'Por favor indícame tu ingreso mensual.\n' +
+          '🤔 Mmm, no pude detectar el monto.\n\n' +
+          'Dime tu ingreso mensual.\n' +
           'Ej: "800000" o "800 lucas"'
         );
         return;
@@ -388,9 +431,9 @@ async function handleOnboarding(user, message) {
       );
       
       await sendWhatsApp(user.phone,
-        `✅ Perfecto, ingreso mensual: $${amount.toLocaleString('es-CL')}\n\n` +
-        '🎯 ¿Cuánto te gustaría ahorrar al mes?\n\n' +
-        'Tip: Se recomienda ahorrar al menos el 10-20% de tus ingresos.\n' +
+        `¡Dale! Tu ingreso mensual: $${amount.toLocaleString('es-CL')}\n\n` +
+        '🎯 Ahora cuéntame, ¿cuánto quieres ahorrar al mes?\n\n' +
+        'Tip: Lo ideal es ahorrar entre 10-20% de lo que ganas.\n' +
         `(En tu caso, entre $${(amount * 0.1).toLocaleString('es-CL')} y $${(amount * 0.2).toLocaleString('es-CL')})`
       );
       break;
@@ -398,8 +441,8 @@ async function handleOnboarding(user, message) {
     case 'awaiting_savings_goal':
       if (!amount || amount <= 0) {
         await sendWhatsApp(user.phone,
-          '🤔 No detecté un monto válido.\n\n' +
-          'Por favor indícame cuánto quieres ahorrar al mes.\n' +
+          '🤔 Mmm, no pude detectar el monto.\n\n' +
+          'Dime cuánto quieres ahorrar al mes.\n' +
           'Ej: "100000" o "100 lucas"'
         );
         return;
@@ -410,9 +453,10 @@ async function handleOnboarding(user, message) {
       // Validar que la meta de ahorro sea razonable
       if (amount > income * 0.8) {
         await sendWhatsApp(user.phone,
-          `⚠️ Tu meta de ahorro ($${amount.toLocaleString('es-CL')}) es muy alta comparada con tu ingreso ($${income.toLocaleString('es-CL')}).\n\n` +
-          'Te sugiero una meta más realista (máximo 80% del ingreso).\n\n' +
-          '¿Cuál será tu meta de ahorro mensual?'
+          `⚠️ Ojo, esa meta es muy alta.\n\n` +
+          `Quieres ahorrar $${amount.toLocaleString('es-CL')} pero ganas $${income.toLocaleString('es-CL')}.\n\n` +
+          'Te sugiero algo más realista (máximo 80% de tu ingreso).\n\n' +
+          '¿Cuánto quieres ahorrar al mes?'
         );
         return;
       }
@@ -426,21 +470,29 @@ async function handleOnboarding(user, message) {
       const spendingBudget = income - amount;
       
       await sendWhatsApp(user.phone,
-        `🎉 ¡Perfecto! Tu perfil financiero está listo:\n\n` +
-        `💰 Ingreso mensual: $${income.toLocaleString('es-CL')}\n` +
+        `🎉 ¡Listo! Ya está todo configurado:\n\n` +
+        `💰 Ganas al mes: $${income.toLocaleString('es-CL')}\n` +
         `🎯 Meta de ahorro: $${amount.toLocaleString('es-CL')} (${((amount/income)*100).toFixed(0)}%)\n` +
-        `💸 Presupuesto para gastos: $${spendingBudget.toLocaleString('es-CL')}\n\n` +
+        `💸 Tienes para gastar: $${spendingBudget.toLocaleString('es-CL')}\n\n` +
         `━━━━━━━━━━━━━\n\n` +
-        `Ahora puedo ayudarte a:\n\n` +
-        `📝 Registrar gastos:\n` +
-        `"Gasté 5000 en almuerzo"\n\n` +
-        `📊 Consultar gastos:\n` +
-        `"¿Cuánto gasté esta semana?"\n\n` +
-        `💰 Configurar presupuestos:\n` +
-        `"Quiero gastar máximo 100000 en comida"\n\n` +
-        `📈 Estado financiero:\n` +
+        `📚 Así me usas:\n\n` +
+        `📝 REGISTRAR GASTOS:\n` +
+        `"Gasté 15000 en Jumbo"\n` +
+        `"5 lucas en Uber"\n` +
+        `"Almuerzo 8000"\n\n` +
+        `📊 CONSULTAR GASTOS:\n` +
+        `"¿Cuánto gasté esta semana?"\n` +
+        `"Detalle de comida del mes"\n` +
+        `"¿Cuánto llevo gastado?"\n\n` +
+        `💰 PONER PRESUPUESTOS:\n` +
+        `"Máximo 300000 en comida"\n` +
+        `"Presupuesto de 50000 en transporte"\n\n` +
+        `📈 VER CÓMO VAS:\n` +
         `"¿Cómo van mis presupuestos?"\n\n` +
-        `¡Comienza registrando tu primer gasto! 🚀`
+        `💡 PEDIRME CONSEJOS:\n` +
+        `"¿Puedo comprar un auto de 5 palos?"\n` +
+        `"¿Cómo ahorro más?"\n\n` +
+        `¡Empieza registrando tu primer gasto! 🚀`
       );
       break;
   }
@@ -508,33 +560,33 @@ async function checkFinancialHealth(user) {
   if (percentageUsed > 70 && percentageUsed < 100) {
     shouldAlert = true;
     alertType = 'high_spending';
-    alertMessage = `⚠️ Alerta Financiera\n\n` +
+    alertMessage = `⚠️ Ojo con los gastos\n\n` +
       `Llevas gastado $${totalSpent.toLocaleString('es-CL')} este mes (${percentageUsed.toFixed(0)}% de tu presupuesto).\n\n` +
-      `📊 Tu presupuesto disponible era: $${spendingBudget.toLocaleString('es-CL')}\n` +
+      `💸 Tenías para gastar: $${spendingBudget.toLocaleString('es-CL')}\n` +
       `💰 Te quedan: $${(spendingBudget - totalSpent).toLocaleString('es-CL')}\n\n` +
-      `⚠️ Cuidado: A este ritmo, podrías no alcanzar tu meta de ahorro de $${savingsGoal.toLocaleString('es-CL')}.\n\n`;
+      `⚠️ A este ritmo, tu meta de ahorro de $${savingsGoal.toLocaleString('es-CL')} está complicada.\n\n`;
   }
   
   // Alerta 2: Proyección indica que no alcanzará meta
   if (projectedSavings < savingsGoal * 0.8 && !shouldAlert) {
     shouldAlert = true;
     alertType = 'savings_risk';
-    alertMessage = `🚨 Tu meta de ahorro está en riesgo\n\n` +
-      `📈 Proyección fin de mes:\n` +
-      `Gastos estimados: $${projectedTotal.toLocaleString('es-CL')}\n` +
-      `Ahorro estimado: $${projectedSavings.toLocaleString('es-CL')}\n` +
-      `Meta de ahorro: $${savingsGoal.toLocaleString('es-CL')}\n\n` +
-      `💡 Necesitas reducir gastos en $${(projectedTotal - spendingBudget).toLocaleString('es-CL')} para alcanzar tu meta.\n\n`;
+    alertMessage = `🚨 Ojo, tu meta de ahorro está en riesgo\n\n` +
+      `📈 Si sigues así, al final del mes:\n` +
+      `Vas a gastar: $${projectedTotal.toLocaleString('es-CL')}\n` +
+      `Vas a ahorrar: $${projectedSavings.toLocaleString('es-CL')}\n` +
+      `Tu meta era: $${savingsGoal.toLocaleString('es-CL')}\n\n` +
+      `💡 Tendrías que reducir gastos en $${(projectedTotal - spendingBudget).toLocaleString('es-CL')} para llegar.\n\n`;
   }
   
   // Alerta 3: Categoría específica > 30% del ingreso
   if (topCategoryPercentage > 30 && !shouldAlert) {
     shouldAlert = true;
     alertType = 'category_high';
-    alertMessage = `💡 Consejo Financiero\n\n` +
-      `Noté que gastas mucho en ${topCategory.category}:\n` +
-      `$${parseFloat(topCategory.category_total).toLocaleString('es-CL')} (${topCategoryPercentage.toFixed(0)}% de tu ingreso)\n\n` +
-      `Se recomienda que ninguna categoría supere el 30% de tus ingresos.\n\n`;
+    alertMessage = `💡 Te cuento algo\n\n` +
+      `Estás gastando harto en ${topCategory.category}:\n` +
+      `$${parseFloat(topCategory.category_total).toLocaleString('es-CL')} (${topCategoryPercentage.toFixed(0)}% de lo que ganas)\n\n` +
+      `Lo ideal es que ninguna categoría pase del 30%.\n\n`;
   }
   
   // Si debe alertar, generar consejo con Claude
@@ -609,9 +661,8 @@ async function handleTransaction(user, data) {
   );
   
   const emoji = is_income ? '💰' : '💸';
-  let reply = `${emoji} ${is_income ? 'Ingreso' : 'Gasto'} registrado!\n\n`;
+  let reply = `¡Listo! Ya agregué ${is_income ? 'el ingreso' : 'el gasto'} de ${(category || 'otros').toLowerCase()}.\n\n`;
   reply += `💵 $${Number(amount).toLocaleString('es-CL')}\n`;
-  reply += `📂 ${(category || 'otros').charAt(0).toUpperCase() + (category || 'otros').slice(1)}\n`;
   if (description) reply += `📝 ${description}\n`;
   
   await sendWhatsApp(user.phone, reply);
@@ -840,7 +891,7 @@ async function handleBudget(user, data) {
   );
   
   await sendWhatsApp(user.phone,
-    `✅ Presupuesto configurado:\n\n📂 ${category}\n💰 $${Number(amount).toLocaleString('es-CL')} al mes\n\nTe avisaré cuando llegues al 80% y 100%`
+    `¡Listo! Presupuesto de ${category} configurado.\n\n💰 $${Number(amount).toLocaleString('es-CL')} al mes\n\nTe aviso cuando llegues al 80% y 100%.`
   );
 }
 
@@ -853,7 +904,7 @@ async function handleBudgetStatus(user, data) {
   
   if (budgetsResult.rows.length === 0) {
     await sendWhatsApp(user.phone, 
-      '📊 No tienes presupuestos configurados todavía.\n\nPuedes crear uno diciendo:\n"Quiero gastar máximo $100000 en comida"'
+      '📊 Aún no tienes presupuestos configurados.\n\nPrueba diciendo:\n"Máximo 100000 en comida"'
     );
     return;
   }
@@ -1058,11 +1109,11 @@ async function checkBudgetAlerts(user, category) {
   
   if (percentage >= 100) {
     await sendWhatsApp(user.phone, 
-      `🚨 ¡Alerta! Superaste tu presupuesto de ${category}:\n\nGastado: $${spent.toLocaleString('es-CL')}\nPresupuesto: $${budget.toLocaleString('es-CL')}`
+      `🚨 ¡Ojo! Te pasaste del presupuesto de ${category}:\n\nGastaste: $${spent.toLocaleString('es-CL')}\nTenías: $${budget.toLocaleString('es-CL')}`
     );
   } else if (percentage >= 80) {
     await sendWhatsApp(user.phone,
-      `⚠️ Atención: Llevas ${percentage.toFixed(0)}% de tu presupuesto en ${category}`
+      `⚠️ Atención: Ya llevas ${percentage.toFixed(0)}% del presupuesto en ${category}`
     );
   }
 }
