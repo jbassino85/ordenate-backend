@@ -45,9 +45,22 @@ app.use(bodyParser.json());
 // ============================================
 
 // PostgreSQL Connection (Railway)
+// LOW SEVERITY FIX: Add timeout configuration to prevent hung connections
+// LOW SEVERITY NOTE: rejectUnauthorized: false is used for compatibility with some DB providers
+// For better security, consider using proper SSL certificates when available
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
-  ssl: process.env.NODE_ENV === 'production' ? { rejectUnauthorized: false } : false
+  ssl: process.env.NODE_ENV === 'production' ? {
+    rejectUnauthorized: false
+    // TODO: For production security, consider:
+    // rejectUnauthorized: true,
+    // ca: fs.readFileSync('/path/to/server-certificates/root.crt').toString()
+  } : false,
+  // Connection timeout settings
+  connectionTimeoutMillis: 10000, // 10 seconds to establish connection
+  idleTimeoutMillis: 30000,       // 30 seconds before closing idle connection
+  max: 20,                         // Maximum number of clients in the pool
+  statement_timeout: 30000         // 30 seconds query timeout
 });
 
 // Test DB connection
@@ -140,8 +153,8 @@ app.post('/webhook', webhookLimiter, async (req, res) => {
 // PROCESAMIENTO DE MENSAJES
 // ============================================
 
-// Admin phone (hardcoded)
-const ADMIN_PHONE = '+56982391528';
+// Admin phone (from environment variable for security)
+const ADMIN_PHONE = process.env.ADMIN_PHONE || '';
 
 // Feature flags
 const SHOW_PREMIUM_MESSAGE = process.env.SHOW_PREMIUM_MESSAGE === 'true';
@@ -519,10 +532,24 @@ EJEMPLOS DE QUERIES:
     if (usage.cache_read_input_tokens) {
       console.log(`⚡ Cache hit: ${usage.cache_read_input_tokens} tokens (saved ~$${(usage.cache_read_input_tokens * 0.0000009).toFixed(4)})`);
     }
-    
+
+    // MEDIUM SEVERITY FIX: Check if response.content exists before accessing
+    if (!response.content || response.content.length === 0) {
+      console.error('❌ Empty response from Claude API');
+      return { type: 'OTHER' };
+    }
+
     const jsonText = response.content[0].text.trim();
     const cleaned = jsonText.replace(/```json|```/g, '').trim();
-    return JSON.parse(cleaned);
+
+    // MEDIUM SEVERITY FIX: Wrap JSON.parse in try-catch to handle invalid JSON
+    try {
+      return JSON.parse(cleaned);
+    } catch (parseError) {
+      console.error('❌ JSON parse error:', parseError);
+      console.error('   Raw response:', jsonText);
+      return { type: 'OTHER' };
+    }
   } catch (error) {
     console.error('❌ Claude error:', error);
     return { type: 'OTHER' };
@@ -792,10 +819,14 @@ async function isValidCategory(categoryName, type = 'expense') {
 // Obtener emoji de categoría
 async function getCategoryEmoji(categoryName, type = 'expense') {
   const result = await pool.query(
-    `SELECT emoji FROM categories 
+    `SELECT emoji FROM categories
      WHERE LOWER(name) = LOWER($1) AND type = $2 AND is_active = true`,
     [categoryName, type]
   );
+  // LOW SEVERITY FIX: Safe access with fallback (already using optional chaining, but add logging)
+  if (result.rows.length === 0) {
+    console.log(`⚠️ Category emoji not found: ${categoryName} (${type}), using default`);
+  }
   return result.rows[0]?.emoji || '📦';
 }
 
@@ -904,6 +935,13 @@ async function checkIncomeUpdatePrompt(user) {
     
     // 4. Calcular diferencia
     const currentIncome = parseFloat(user.monthly_income);
+
+    // HIGH SEVERITY FIX: Prevent division by zero
+    if (!currentIncome || currentIncome <= 0) {
+      console.log(`⚠️ Invalid currentIncome: ${currentIncome}, skipping income update prompt`);
+      return;
+    }
+
     const difference = avgIncome - currentIncome;
     const percentDiff = Math.abs(difference / currentIncome * 100);
     
@@ -1254,10 +1292,11 @@ async function handleOnboarding(user, message) {
         'UPDATE users SET savings_goal = $1, onboarding_complete = true WHERE id = $2',
         [amount, user.id]
       );
-      
+
       // Recargar usuario para obtener nombre
       const updatedUser = await pool.query('SELECT name FROM users WHERE id = $1', [user.id]);
-      const userName = updatedUser.rows[0].name || '';
+      // CRITICAL FIX: Check if user exists before accessing rows[0]
+      const userName = (updatedUser.rows.length > 0 && updatedUser.rows[0].name) ? updatedUser.rows[0].name : '';
       const greeting = userName ? `¡Listo ${userName}!` : '¡Listo!';
       
       const spendingBudget = income - amount;
@@ -1332,8 +1371,15 @@ async function checkFinancialHealth(user) {
   if (spentResult.rows.length === 0) {
     return; // No hay gastos aún
   }
-  
+
   const totalSpent = spentResult.rows.reduce((sum, row) => sum + parseFloat(row.category_total), 0);
+
+  // HIGH SEVERITY FIX: Prevent division by zero
+  if (!spendingBudget || spendingBudget <= 0) {
+    console.log(`⚠️ Invalid spendingBudget: ${spendingBudget}, skipping financial health check`);
+    return;
+  }
+
   const percentageUsed = (totalSpent / spendingBudget) * 100;
   
   // Calcular días transcurridos y proyección
@@ -1436,7 +1482,13 @@ Responde SOLO con el consejo directo, sin preámbulos como "Consejo:" o "Te reco
         content: prompt
       }]
     });
-    
+
+    // MEDIUM SEVERITY FIX: Check if response.content exists before accessing
+    if (!response.content || response.content.length === 0) {
+      console.error('❌ Empty response from Claude API in generateFinancialAdvice');
+      return `Trata de reducir gastos en ${topCategory} esta semana para volver al presupuesto.`;
+    }
+
     return `${response.content[0].text}`;
   } catch (error) {
     console.error('❌ Error generating advice:', error);
@@ -1469,6 +1521,14 @@ async function handleTransaction(user, data) {
       `SELECT id, name, emoji FROM categories WHERE name = 'otros' AND type = $1`,
       [categoryType]
     );
+
+    // CRITICAL FIX: Check if "otros" category exists before accessing rows[0]
+    if (otrosResult.rows.length === 0) {
+      console.error(`❌ CRITICAL: "otros" fallback category not found for type ${categoryType}`);
+      await sendWhatsApp(user.phone, '❌ Error: Categoría no encontrada. Por favor contacta al administrador.');
+      return;
+    }
+
     categoryId = otrosResult.rows[0].id;
     categoryRealName = otrosResult.rows[0].name;
     categoryEmoji = otrosResult.rows[0].emoji;
@@ -1710,11 +1770,14 @@ async function handleQuery(user, data) {
   await sendWhatsApp(user.phone, reply);
   
   // Mensaje de upgrade a Premium (solo si está habilitado)
+  // MEDIUM SEVERITY FIX: Handle async operation properly to avoid race condition
   if (SHOW_PREMIUM_MESSAGE && user.plan === 'free') {
-    setTimeout(async () => {
-      await sendWhatsApp(user.phone, 
+    setTimeout(() => {
+      sendWhatsApp(user.phone,
         '💎 ¿Quieres ver gráficos y análisis detallados?\n\nUpgrade a Premium por $10/mes\nEscribe "premium" para más info'
-      );
+      ).catch(err => {
+        console.error('❌ Error sending premium message:', err);
+      });
     }, 2000);
   }
 }
@@ -1784,25 +1847,35 @@ async function handleBudgetStatus(user, data) {
   let reply = `💰 Estado de tus presupuestos (${currentMonth}):\n\n`;
   let totalBudget = 0;
   let totalSpent = 0;
-  
+
+  // MEDIUM SEVERITY FIX: Solve N+1 query problem by fetching all spending data in a single query
+  const categoryIds = budgetsResult.rows.map(b => b.category_id);
+  const spendingData = await pool.query(
+    `SELECT category_id, COALESCE(SUM(amount), 0) as total
+     FROM transactions
+     WHERE user_id = $1 AND category_id = ANY($2)
+     AND date >= date_trunc('month', CURRENT_DATE)
+     AND is_income = false
+     GROUP BY category_id`,
+    [user.id, categoryIds]
+  );
+
+  // Create a map for quick lookup
+  const spendingMap = {};
+  spendingData.rows.forEach(row => {
+    spendingMap[row.category_id] = parseFloat(row.total);
+  });
+
   // Para cada presupuesto, calcular gasto del mes
   for (const budget of budgetsResult.rows) {
     const limit = parseFloat(budget.monthly_limit);
     totalBudget += limit;
-    
-    // Calcular gasto del mes actual en esta categoría con category_id
-    const spentResult = await pool.query(
-      `SELECT COALESCE(SUM(amount), 0) as total FROM transactions 
-       WHERE user_id = $1 AND category_id = $2 
-       AND date >= date_trunc('month', CURRENT_DATE)
-       AND is_income = false`,
-      [user.id, budget.category_id]
-    );
-    
-    const spent = parseFloat(spentResult.rows[0].total);
+
+    const spent = spendingMap[budget.category_id] || 0;
     totalSpent += spent;
-    
-    const percentage = (spent / limit) * 100;
+
+    // HIGH SEVERITY FIX: Prevent division by zero
+    const percentage = (limit > 0) ? (spent / limit) * 100 : 0;
     const available = limit - spent;
     
     const emoji = budget.emoji || '📦';
@@ -1892,7 +1965,9 @@ async function handleFinancialAdvice(user, data, originalQuestion) {
   
   context += `SITUACIÓN ACTUAL (este mes):\n`;
   context += `- Día ${dayOfMonth} de ${daysInMonth} del mes\n`;
-  context += `- Gastado hasta ahora: $${totalSpent.toLocaleString('es-CL')} (${((totalSpent/spendingBudget)*100).toFixed(0)}% del presupuesto)\n`;
+  // HIGH SEVERITY FIX: Prevent division by zero
+  const budgetPercentage = (spendingBudget > 0) ? ((totalSpent/spendingBudget)*100).toFixed(0) : '0';
+  context += `- Gastado hasta ahora: $${totalSpent.toLocaleString('es-CL')} (${budgetPercentage}% del presupuesto)\n`;
   context += `- Disponible: $${(spendingBudget - totalSpent).toLocaleString('es-CL')}\n`;
   context += `- Proyección fin de mes: $${projectedTotal.toLocaleString('es-CL')} en gastos, $${projectedSavings.toLocaleString('es-CL')} de ahorro\n\n`;
   
@@ -1964,11 +2039,20 @@ async function handleFinancialAdvice(user, data, originalQuestion) {
         content: context
       }]
     });
-    
+
+    // MEDIUM SEVERITY FIX: Check if response.content exists before accessing
+    if (!response.content || response.content.length === 0) {
+      console.error('❌ Empty response from Claude API in handleFinancialAdvice');
+      await sendWhatsApp(user.phone,
+        'Ups, tuve un problema generando el consejo. ¿Puedes intentar reformular tu pregunta? 🤔'
+      );
+      return;
+    }
+
     await sendWhatsApp(user.phone, `💡 ${response.content[0].text}`);
   } catch (error) {
     console.error('❌ Error generating financial advice:', error);
-    await sendWhatsApp(user.phone, 
+    await sendWhatsApp(user.phone,
       'Ups, tuve un problema generando el consejo. ¿Puedes intentar reformular tu pregunta? 🤔'
     );
   }
@@ -1999,8 +2083,15 @@ async function checkBudgetAlerts(user, categoryId) {
   );
   
   const spent = parseFloat(spentResult.rows[0].total || 0);
+
+  // HIGH SEVERITY FIX: Prevent division by zero
+  if (!budget || budget <= 0) {
+    console.log(`⚠️ Invalid budget: ${budget}, skipping budget alert`);
+    return;
+  }
+
   const percentage = (spent / budget) * 100;
-  
+
   if (percentage >= 100) {
     await sendWhatsApp(user.phone, 
       `🚨 ¡Ojo! Te pasaste del presupuesto de ${emoji} ${name}:\n\nGastaste: $${spent.toLocaleString('es-CL')}\nTenías: $${budget.toLocaleString('es-CL')}`
