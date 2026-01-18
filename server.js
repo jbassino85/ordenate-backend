@@ -63,14 +63,90 @@ const pool = new Pool({
   statement_timeout: 30000         // 30 seconds query timeout
 });
 
-// Test DB connection
-pool.query('SELECT NOW()', (err, res) => {
+// Test DB connection and run migrations
+pool.query('SELECT NOW()', async (err, res) => {
   if (err) {
     console.error('❌ Database connection error:', err);
   } else {
     console.log('✅ Database connected:', res.rows[0].now);
+
+    // Run migrations
+    try {
+      await runMigrations();
+      console.log('✅ Migrations completed');
+    } catch (migrationError) {
+      console.error('❌ Migration error:', migrationError);
+    }
   }
 });
+
+// ============================================
+// DATABASE MIGRATIONS
+// ============================================
+
+async function runMigrations() {
+  // Migration 001: Add fixed expenses feature
+  try {
+    // 1. Add expense_type column to transactions
+    await pool.query(`
+      ALTER TABLE transactions
+      ADD COLUMN IF NOT EXISTS expense_type VARCHAR(10) DEFAULT 'variable'
+    `);
+
+    // Add check constraint if not exists (PostgreSQL doesn't have IF NOT EXISTS for constraints)
+    await pool.query(`
+      DO $$
+      BEGIN
+        IF NOT EXISTS (
+          SELECT 1 FROM pg_constraint WHERE conname = 'transactions_expense_type_check'
+        ) THEN
+          ALTER TABLE transactions
+          ADD CONSTRAINT transactions_expense_type_check
+          CHECK (expense_type IN ('fixed', 'variable'));
+        END IF;
+      END $$;
+    `);
+
+    // 2. Create fixed_expenses table
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS fixed_expenses (
+        id SERIAL PRIMARY KEY,
+        user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        description VARCHAR(255) NOT NULL,
+        typical_amount DECIMAL(12,2) NOT NULL,
+        category_id INTEGER REFERENCES categories(id),
+        reminder_day INTEGER CHECK (reminder_day BETWEEN 1 AND 31),
+        is_active BOOLEAN DEFAULT true,
+        created_at TIMESTAMP DEFAULT NOW(),
+        updated_at TIMESTAMP DEFAULT NOW()
+      )
+    `);
+
+    // 3. Create indexes
+    await pool.query(`
+      CREATE INDEX IF NOT EXISTS idx_fixed_expenses_user ON fixed_expenses(user_id)
+    `);
+    await pool.query(`
+      CREATE INDEX IF NOT EXISTS idx_fixed_expenses_reminder ON fixed_expenses(reminder_day, is_active)
+    `);
+    await pool.query(`
+      CREATE INDEX IF NOT EXISTS idx_transactions_expense_type ON transactions(expense_type)
+    `);
+
+    // 4. Add pending_fixed_expense_id column to users for conversation state
+    await pool.query(`
+      ALTER TABLE users
+      ADD COLUMN IF NOT EXISTS pending_fixed_expense_id INTEGER
+    `);
+
+    console.log('  ✓ Migration 001: Fixed expenses feature');
+  } catch (error) {
+    // Ignore errors for already existing objects
+    if (!error.message.includes('already exists')) {
+      throw error;
+    }
+  }
+}
 
 // Anthropic Claude Client
 const anthropic = new Anthropic({
@@ -240,7 +316,69 @@ async function processUserMessage(phone, message) {
         console.log(`⚠️ Income update context active but message ambiguous: "${message}"`);
       }
     }
-    
+
+    // 3.5 Verificar si estamos esperando respuesta de recordatorio mensual (-999)
+    if (user.pending_fixed_expense_id === -999) {
+      const handled = await handleFixedExpenseReminderResponse(user, message);
+      if (handled) return;
+      // Si no se procesó, continuar con clasificación normal
+    }
+
+    // 3.6 Verificar si estamos esperando edición o día de recordatorio para gasto fijo
+    if (user.pending_fixed_expense_id && user.pending_fixed_expense_id > 0) {
+      const msgLower = message.toLowerCase().trim();
+
+      // Verificar si quiere cancelar
+      if (['cancelar', 'saltar', 'skip', 'no', 'omitir'].includes(msgLower)) {
+        await clearPendingFixedExpense(user.id);
+        await sendWhatsApp(user.phone, '👍 Ok, cancelado.');
+        return;
+      }
+
+      // Intentar extraer monto y/o día del mensaje
+      const amount = extractAmount(message);
+      const day = extractReminderDay(message);
+
+      // Si hay monto o día, actualizar el gasto fijo
+      if (amount || day) {
+        const updates = {};
+        if (amount) updates.typical_amount = amount;
+        if (day) updates.reminder_day = day;
+
+        await updateFixedExpense(user.pending_fixed_expense_id, user.id, updates);
+        await clearPendingFixedExpense(user.id);
+
+        let confirmMsg = '✅ Actualizado:';
+        if (amount) confirmMsg += ` monto a $${amount.toLocaleString('es-CL')}`;
+        if (amount && day) confirmMsg += ' y';
+        if (day) confirmMsg += ` día a ${day}`;
+
+        await sendWhatsApp(user.phone, confirmMsg);
+        return;
+      }
+
+      // Si no detectamos monto ni día, pedir de nuevo
+      await sendWhatsApp(user.phone,
+        '🤔 No entendí. Escribe:\n' +
+        '- Un monto (ej: "500000")\n' +
+        '- Un día (ej: "día 15")\n' +
+        '- Ambos (ej: "500000 día 10")\n' +
+        '- O "cancelar" para salir.'
+      );
+      return;
+    }
+
+    // 3.7 Verificar si hay transacción pendiente de marcar como fijo (negativo)
+    if (user.pending_fixed_expense_id && user.pending_fixed_expense_id < 0 && user.pending_fixed_expense_id !== -999) {
+      const msgLower = message.toLowerCase().trim();
+      if (['fijo', 'es fijo', 'si fijo', 'sí fijo', 'hacerlo fijo'].includes(msgLower)) {
+        await handleMarkAsFixed(user);
+        return;
+      }
+      // Si no respondió "fijo", limpiar y continuar
+      await clearPendingFixedExpense(user.id);
+    }
+
     console.log(`🤖 Classifying intent with Claude...`);
     
     // 4. Usuario completo - clasificar intención con Claude
@@ -274,12 +412,34 @@ async function processUserMessage(phone, message) {
       case 'QUERY_CATEGORIES':
         await handleQueryCategories(user);
         break;
+      case 'FIXED_EXPENSES_LIST':
+        await handleFixedExpensesList(user);
+        break;
+      case 'EDIT_FIXED_EXPENSE':
+        await handleEditFixedExpense(user, intent.data);
+        break;
+      case 'DELETE_FIXED_EXPENSE':
+        await handleDeleteFixedExpense(user, intent.data);
+        break;
+      case 'PAUSE_FIXED_EXPENSE':
+        await handlePauseFixedExpense(user, intent.data);
+        break;
+      case 'ACTIVATE_FIXED_EXPENSE':
+        await handleActivateFixedExpense(user, intent.data);
+        break;
+      case 'SET_REMINDER_DAY':
+        await handleSetReminderDay(user, intent.data);
+        break;
+      case 'MARK_AS_FIXED':
+        await handleMarkAsFixed(user);
+        break;
       default:
-        await sendWhatsApp(phone, 
+        await sendWhatsApp(phone,
           '🤔 Mmm, no te entendí. Prueba con:\n\n' +
           '💸 "Gasté 5000 en almuerzo"\n' +
           '📊 "¿Cuánto gasté esta semana?"\n' +
           '💰 "Máximo 100000 en comida"\n' +
+          '📌 "Mis fijos" o "Gasto fijo arriendo 450000"\n' +
           '💡 "¿Cómo ahorro más?"'
         );
     }
@@ -310,20 +470,28 @@ async function classifyIntent(message, user) {
 
 CATEGORÍAS POSIBLES:
 1. TRANSACTION: Registrar gasto/ingreso
-   
+
    GASTOS - Palabras clave: "gasté", "compré", "pagué", "me salió", "me costó"
    Ejemplos: "gasté 5 lucas en almuerzo", "pagué 10000 en uber", "compré en Jumbo"
-   
-   INGRESOS - Palabras clave: "gané", "me pagaron", "cobré", "ingresé", "recibí", 
+
+   GASTOS FIJOS - Palabras clave: "gasto fijo", "fijo", "pago fijo"
+   Si el usuario usa estas palabras, marcar is_fixed: true y ask_reminder_day: true
+   Ejemplos:
+   - "gasto fijo arriendo 450000" → is_fixed: true, ask_reminder_day: true
+   - "fijo luz 45000" → is_fixed: true, ask_reminder_day: true
+   - "pago fijo spotify 5990" → is_fixed: true, ask_reminder_day: true
+
+   INGRESOS - Palabras clave: "gané", "me pagaron", "cobré", "ingresé", "recibí",
    "me depositaron", "sueldo", "salario", "honorarios", "freelance", "cliente", "pago"
-   Ejemplos: 
+   Ejemplos:
    - "Gané 30000 con un cliente web"
    - "Me pagaron el sueldo 1500000"
    - "Cobré 50000 por el proyecto"
    - "Me depositaron 100000"
    - "Ingresé 50 mil por freelance"
-   
+
    IMPORTANTE: Si no hay palabra clave clara, asumir que es GASTO (default).
+   IMPORTANTE: Para gastos fijos, incluir is_fixed: true y ask_reminder_day: true en data.
    
 2. QUERY: Consultar información
    Ejemplos: "¿cuánto gasté esta semana?", "mostrar mis gastos"
@@ -379,7 +547,7 @@ CATEGORÍAS POSIBLES:
    Debe retornar: { new_category: "nombre_categoria" }
    
 8. QUERY_CATEGORIES: Consultar categorías disponibles
-   Palabras clave: "qué categorías", "cuáles categorías", "categorías disponibles", 
+   Palabras clave: "qué categorías", "cuáles categorías", "categorías disponibles",
                    "lista de categorías", "categorías válidas", "en qué puedo clasificar"
    Ejemplos:
    - "¿Qué categorías hay?"
@@ -387,8 +555,60 @@ CATEGORÍAS POSIBLES:
    - "Muéstrame las categorías"
    - "¿En qué categorías puedo clasificar?"
    Debe retornar: {}
-   
-9. OTHER: Otro tipo
+
+9. FIXED_EXPENSES_LIST: Ver lista de gastos fijos
+   Palabras clave: "mis fijos", "gastos fijos", "ver fijos", "lista fijos", "mis gastos fijos"
+   Ejemplos:
+   - "mis fijos"
+   - "gastos fijos"
+   - "ver fijos"
+   - "cuáles son mis gastos fijos"
+   Debe retornar: {}
+
+10. EDIT_FIXED_EXPENSE: Editar un gasto fijo
+    Palabras clave: "editar fijo", "modificar fijo", "cambiar fijo"
+    Ejemplos:
+    - "editar fijo 1"
+    - "modificar fijo 2"
+    - "cambiar el fijo 3"
+    Debe retornar: { index: número_del_gasto }
+
+11. DELETE_FIXED_EXPENSE: Eliminar un gasto fijo
+    Palabras clave: "eliminar fijo", "borrar fijo", "quitar fijo"
+    Ejemplos:
+    - "eliminar fijo 1"
+    - "borrar fijo 2"
+    Debe retornar: { index: número_del_gasto }
+
+12. PAUSE_FIXED_EXPENSE: Pausar un gasto fijo (desactivar recordatorios)
+    Palabras clave: "pausar fijo", "desactivar fijo"
+    Ejemplos:
+    - "pausar fijo 1"
+    - "desactivar fijo 2"
+    Debe retornar: { index: número_del_gasto }
+
+13. ACTIVATE_FIXED_EXPENSE: Reactivar un gasto fijo pausado
+    Palabras clave: "activar fijo", "reactivar fijo"
+    Ejemplos:
+    - "activar fijo 1"
+    - "reactivar fijo 2"
+    Debe retornar: { index: número_del_gasto }
+
+14. SET_REMINDER_DAY: Establecer día de recordatorio para gasto fijo
+    SOLO usar cuando el usuario responde con un día después de registrar un gasto fijo
+    Ejemplos:
+    - "5"
+    - "día 15"
+    - "el 20"
+    - "cada 10"
+    Debe retornar: { day: número_del_día }
+
+15. MARK_AS_FIXED: Marcar un gasto reciente como fijo
+    Palabras clave: "fijo", "es fijo", "sí fijo", "si fijo", "hacerlo fijo"
+    SOLO usar cuando el usuario responde "fijo" después de que el bot sugiere marcarlo como fijo
+    Debe retornar: {}
+
+16. OTHER: Otro tipo
 
 MODISMOS CHILENOS:
 - "lucas/luca/lukas" = miles de pesos (ej: "5 lucas" = 5000)
@@ -470,17 +690,33 @@ REGLAS PARA EL CAMPO "description":
 FORMATO DE RESPUESTA:
 Responde SOLO con JSON válido (sin markdown, sin explicaciones):
 {
-  "type": "TRANSACTION|QUERY|BUDGET|BUDGET_STATUS|FINANCIAL_ADVICE|OTHER",
+  "type": "TRANSACTION|QUERY|BUDGET|BUDGET_STATUS|FINANCIAL_ADVICE|FIXED_EXPENSES_LIST|EDIT_FIXED_EXPENSE|DELETE_FIXED_EXPENSE|PAUSE_FIXED_EXPENSE|ACTIVATE_FIXED_EXPENSE|SET_REMINDER_DAY|MARK_AS_FIXED|OTHER",
   "data": {
     "amount": número_sin_símbolos,
     "category": "categoría",
     "description": "texto",
     "is_income": true/false,
+    "is_fixed": true/false (true si es gasto fijo),
+    "ask_reminder_day": true/false (true si debe preguntar día de recordatorio),
     "period": "today|yesterday|week|month|year|last_week|last_month",
     "detail": true/false (solo para QUERY: true si pide desglose, false para resumen),
-    "question": "pregunta_original" (solo para FINANCIAL_ADVICE)
+    "question": "pregunta_original" (solo para FINANCIAL_ADVICE),
+    "index": número (para editar/eliminar/pausar/activar fijo),
+    "day": número (para SET_REMINDER_DAY)
   }
 }
+
+EJEMPLOS DE GASTOS FIJOS:
+- "gasto fijo arriendo 450000" → {"type":"TRANSACTION","data":{"amount":450000,"category":"hogar","description":"Arriendo","is_income":false,"is_fixed":true,"ask_reminder_day":true}}
+- "fijo luz 45000" → {"type":"TRANSACTION","data":{"amount":45000,"category":"servicios","description":"Luz","is_income":false,"is_fixed":true,"ask_reminder_day":true}}
+- "mis fijos" → {"type":"FIXED_EXPENSES_LIST","data":{}}
+- "editar fijo 1" → {"type":"EDIT_FIXED_EXPENSE","data":{"index":1}}
+- "eliminar fijo 2" → {"type":"DELETE_FIXED_EXPENSE","data":{"index":2}}
+- "pausar fijo 1" → {"type":"PAUSE_FIXED_EXPENSE","data":{"index":1}}
+- "activar fijo 2" → {"type":"ACTIVATE_FIXED_EXPENSE","data":{"index":2}}
+- "5" (respuesta a día) → {"type":"SET_REMINDER_DAY","data":{"day":5}}
+- "día 15" → {"type":"SET_REMINDER_DAY","data":{"day":15}}
+- "fijo" (marcar como fijo) → {"type":"MARK_AS_FIXED","data":{}}
 
 EJEMPLOS DE QUERIES:
 - "¿cuánto gasté hoy?" → {"type":"QUERY","data":{"period":"today","detail":false}}
@@ -837,6 +1073,212 @@ async function formatCategoriesList(type = 'expense') {
 }
 
 // ============================================
+// FIXED EXPENSES MANAGEMENT
+// ============================================
+
+// Lista de descripciones que sugieren gastos fijos
+const FIXED_EXPENSE_KEYWORDS = [
+  'arriendo', 'alquiler', 'renta',
+  'luz', 'electricidad', 'enel', 'cge', 'chilectra',
+  'agua', 'aguas andinas', 'esval', 'essbio',
+  'gas', 'metrogas', 'lipigas', 'gasco',
+  'internet', 'vtr', 'movistar', 'entel', 'claro', 'wom', 'mundo pacifico',
+  'telefono', 'celular', 'plan movil',
+  'netflix', 'spotify', 'disney', 'hbo', 'amazon prime', 'youtube premium',
+  'apple music', 'deezer', 'crunchyroll', 'paramount',
+  'gimnasio', 'gym', 'smart fit', 'sportlife', 'pacific',
+  'seguro', 'isapre', 'fonasa', 'afp',
+  'colegio', 'universidad', 'jardin', 'mensualidad',
+  'credito', 'hipotecario', 'dividendo', 'cuota', 'prestamo',
+  'pension', 'alimenticia', 'gastos comunes', 'condominio',
+  'suscripcion', 'membresia', 'chatgpt', 'openai', 'notion', 'slack',
+  'icloud', 'google one', 'dropbox', 'adobe', 'microsoft 365', 'office'
+];
+
+// Detectar si una descripción parece un gasto fijo
+function looksLikeFixedExpense(description) {
+  if (!description) return false;
+  const descLower = description.toLowerCase();
+  return FIXED_EXPENSE_KEYWORDS.some(keyword => descLower.includes(keyword));
+}
+
+// Crear un gasto fijo
+async function createFixedExpense(userId, description, amount, categoryId, reminderDay = null) {
+  const result = await pool.query(
+    `INSERT INTO fixed_expenses (user_id, description, typical_amount, category_id, reminder_day, is_active)
+     VALUES ($1, $2, $3, $4, $5, true)
+     RETURNING *`,
+    [userId, description, amount, categoryId, reminderDay]
+  );
+  return result.rows[0];
+}
+
+// Obtener gastos fijos de un usuario
+async function getFixedExpenses(userId, onlyActive = true) {
+  let query = `
+    SELECT fe.*, c.name as category_name, c.emoji as category_emoji
+    FROM fixed_expenses fe
+    LEFT JOIN categories c ON fe.category_id = c.id
+    WHERE fe.user_id = $1
+  `;
+  if (onlyActive) {
+    query += ' AND fe.is_active = true';
+  }
+  query += ' ORDER BY fe.reminder_day NULLS LAST, fe.description';
+
+  const result = await pool.query(query, [userId]);
+  return result.rows;
+}
+
+// Obtener un gasto fijo por ID
+async function getFixedExpenseById(id, userId) {
+  const result = await pool.query(
+    `SELECT fe.*, c.name as category_name, c.emoji as category_emoji
+     FROM fixed_expenses fe
+     LEFT JOIN categories c ON fe.category_id = c.id
+     WHERE fe.id = $1 AND fe.user_id = $2`,
+    [id, userId]
+  );
+  return result.rows[0] || null;
+}
+
+// Actualizar gasto fijo
+async function updateFixedExpense(id, userId, updates) {
+  const allowedFields = ['description', 'typical_amount', 'category_id', 'reminder_day', 'is_active'];
+  const setClause = [];
+  const values = [];
+  let paramIndex = 1;
+
+  for (const [key, value] of Object.entries(updates)) {
+    if (allowedFields.includes(key) && value !== undefined) {
+      setClause.push(`${key} = $${paramIndex}`);
+      values.push(value);
+      paramIndex++;
+    }
+  }
+
+  if (setClause.length === 0) return null;
+
+  setClause.push(`updated_at = NOW()`);
+  values.push(id, userId);
+
+  const result = await pool.query(
+    `UPDATE fixed_expenses
+     SET ${setClause.join(', ')}
+     WHERE id = $${paramIndex} AND user_id = $${paramIndex + 1}
+     RETURNING *`,
+    values
+  );
+  return result.rows[0] || null;
+}
+
+// Eliminar gasto fijo
+async function deleteFixedExpense(id, userId) {
+  const result = await pool.query(
+    `DELETE FROM fixed_expenses WHERE id = $1 AND user_id = $2 RETURNING *`,
+    [id, userId]
+  );
+  return result.rows[0] || null;
+}
+
+// Buscar gasto fijo por descripción (para evitar duplicados)
+async function findFixedExpenseByDescription(userId, description) {
+  const result = await pool.query(
+    `SELECT * FROM fixed_expenses
+     WHERE user_id = $1 AND LOWER(description) = LOWER($2)`,
+    [userId, description]
+  );
+  return result.rows[0] || null;
+}
+
+// Obtener gastos fijos para recordatorio de un día específico
+async function getFixedExpensesForReminderDay(day) {
+  const result = await pool.query(
+    `SELECT
+      u.id as user_id,
+      u.phone,
+      u.name,
+      json_agg(json_build_object(
+        'id', fe.id,
+        'description', fe.description,
+        'amount', fe.typical_amount,
+        'category', c.name,
+        'emoji', c.emoji
+      )) as expenses
+    FROM fixed_expenses fe
+    JOIN users u ON fe.user_id = u.id
+    LEFT JOIN categories c ON fe.category_id = c.id
+    WHERE fe.reminder_day = $1
+      AND fe.is_active = true
+      AND u.onboarding_complete = true
+    GROUP BY u.id, u.phone, u.name`,
+    [day]
+  );
+  return result.rows;
+}
+
+// Registrar todos los gastos fijos como transacciones
+async function registerFixedExpensesAsTransactions(userId, expenses, month = null) {
+  const results = [];
+  const currentDate = new Date();
+  const targetMonth = month || currentDate.toLocaleString('es-CL', { month: 'long' });
+
+  for (const expense of expenses) {
+    const result = await pool.query(
+      `INSERT INTO transactions (user_id, amount, category_id, description, date, is_income, expense_type)
+       VALUES ($1, $2, $3, $4, CURRENT_DATE, false, 'fixed')
+       RETURNING *`,
+      [userId, expense.amount || expense.typical_amount, expense.category_id, expense.description]
+    );
+    results.push(result.rows[0]);
+  }
+
+  return results;
+}
+
+// Establecer pending_fixed_expense_id para conversación
+async function setPendingFixedExpense(userId, fixedExpenseId) {
+  await pool.query(
+    'UPDATE users SET pending_fixed_expense_id = $1 WHERE id = $2',
+    [fixedExpenseId, userId]
+  );
+}
+
+// Limpiar pending_fixed_expense_id
+async function clearPendingFixedExpense(userId) {
+  await pool.query(
+    'UPDATE users SET pending_fixed_expense_id = NULL WHERE id = $1',
+    [userId]
+  );
+}
+
+// Extraer día del mensaje (ej: "5", "día 15", "el 20")
+function extractReminderDay(message) {
+  const cleaned = message.toLowerCase().trim();
+
+  // Patrones para detectar día
+  const patterns = [
+    /^(\d{1,2})$/,                    // Solo número: "5"
+    /d[ií]a\s*(\d{1,2})/,             // "día 15"
+    /el\s*(\d{1,2})/,                 // "el 20"
+    /cada\s*(\d{1,2})/,               // "cada 5"
+    /los?\s*(\d{1,2})/,               // "los 15", "lo 15"
+  ];
+
+  for (const pattern of patterns) {
+    const match = cleaned.match(pattern);
+    if (match) {
+      const day = parseInt(match[1]);
+      if (day >= 1 && day <= 31) {
+        return day;
+      }
+    }
+  }
+
+  return null;
+}
+
+// ============================================
 // INCOME MANAGEMENT
 // ============================================
 
@@ -1139,13 +1581,305 @@ async function handleReclassifyTransaction(user, data) {
 async function handleQueryCategories(user) {
   const expenseCategories = await formatCategoriesList('expense');
   const incomeCategories = await formatCategoriesList('income');
-  
-  const reply = 
+
+  const reply =
     `📊 Categorías disponibles:\n\n` +
     `💸 GASTOS:\n${expenseCategories}\n\n` +
     `💰 INGRESOS:\n${incomeCategories}`;
-  
+
   await sendWhatsApp(user.phone, reply);
+}
+
+// ============================================
+// FIXED EXPENSES HANDLERS
+// ============================================
+
+// Handler: Ver lista de gastos fijos
+async function handleFixedExpensesList(user) {
+  const fixedExpenses = await getFixedExpenses(user.id, false); // Incluir inactivos
+
+  if (fixedExpenses.length === 0) {
+    await sendWhatsApp(user.phone,
+      '📌 No tienes gastos fijos configurados.\n\n' +
+      'Para agregar uno, escribe:\n' +
+      '"gasto fijo arriendo 450000"'
+    );
+    return;
+  }
+
+  let reply = '📌 Tus gastos fijos:\n\n';
+  let totalActive = 0;
+
+  fixedExpenses.forEach((expense, index) => {
+    const emoji = expense.category_emoji || '💸';
+    const amount = parseFloat(expense.typical_amount);
+    const dayText = expense.reminder_day ? `día ${expense.reminder_day}` : 'sin recordatorio';
+    const statusIcon = expense.is_active ? '' : ' ⏸️';
+
+    reply += `${index + 1}. ${emoji} ${expense.description} - $${amount.toLocaleString('es-CL')} (${dayText})${statusIcon}\n`;
+
+    if (expense.is_active) {
+      totalActive += amount;
+    }
+  });
+
+  reply += `\n━━━━━━━━━━━━━\n`;
+  reply += `Total mensual estimado: $${totalActive.toLocaleString('es-CL')}\n\n`;
+  reply += `Comandos:\n`;
+  reply += `"editar fijo 1" | "eliminar fijo 2" | "pausar fijo 3"`;
+
+  await sendWhatsApp(user.phone, reply);
+}
+
+// Handler: Editar gasto fijo
+async function handleEditFixedExpense(user, data) {
+  const { index } = data;
+
+  if (!index || index < 1) {
+    await sendWhatsApp(user.phone,
+      '🤔 Indica el número del gasto fijo a editar.\n' +
+      'Ej: "editar fijo 1"'
+    );
+    return;
+  }
+
+  const fixedExpenses = await getFixedExpenses(user.id, false);
+
+  if (index > fixedExpenses.length) {
+    await sendWhatsApp(user.phone,
+      `❌ No existe el gasto fijo #${index}.\n` +
+      `Tienes ${fixedExpenses.length} gastos fijos. Escribe "mis fijos" para verlos.`
+    );
+    return;
+  }
+
+  const expense = fixedExpenses[index - 1];
+  const emoji = expense.category_emoji || '💸';
+  const dayText = expense.reminder_day ? `día ${expense.reminder_day}` : 'sin día';
+
+  // Guardar el ID para la siguiente respuesta
+  await setPendingFixedExpense(user.id, expense.id);
+
+  await sendWhatsApp(user.phone,
+    `Editando: ${emoji} ${expense.description} $${parseFloat(expense.typical_amount).toLocaleString('es-CL')} (${dayText})\n\n` +
+    `¿Qué quieres cambiar?\n` +
+    `- Monto: escribe el nuevo (ej: "500000")\n` +
+    `- Día: escribe "día X" (ej: "día 10")\n` +
+    `- Ambos: "500000 día 10"\n\n` +
+    `O escribe "cancelar" para salir.`
+  );
+}
+
+// Handler: Eliminar gasto fijo
+async function handleDeleteFixedExpense(user, data) {
+  const { index } = data;
+
+  if (!index || index < 1) {
+    await sendWhatsApp(user.phone,
+      '🤔 Indica el número del gasto fijo a eliminar.\n' +
+      'Ej: "eliminar fijo 1"'
+    );
+    return;
+  }
+
+  const fixedExpenses = await getFixedExpenses(user.id, false);
+
+  if (index > fixedExpenses.length) {
+    await sendWhatsApp(user.phone,
+      `❌ No existe el gasto fijo #${index}.\n` +
+      `Tienes ${fixedExpenses.length} gastos fijos. Escribe "mis fijos" para verlos.`
+    );
+    return;
+  }
+
+  const expense = fixedExpenses[index - 1];
+
+  // Eliminar directamente
+  await deleteFixedExpense(expense.id, user.id);
+
+  await sendWhatsApp(user.phone,
+    `✅ "${expense.description}" eliminado de tus gastos fijos.`
+  );
+}
+
+// Handler: Pausar gasto fijo
+async function handlePauseFixedExpense(user, data) {
+  const { index } = data;
+
+  if (!index || index < 1) {
+    await sendWhatsApp(user.phone,
+      '🤔 Indica el número del gasto fijo a pausar.\n' +
+      'Ej: "pausar fijo 1"'
+    );
+    return;
+  }
+
+  const fixedExpenses = await getFixedExpenses(user.id, false);
+
+  if (index > fixedExpenses.length) {
+    await sendWhatsApp(user.phone,
+      `❌ No existe el gasto fijo #${index}.\n` +
+      `Tienes ${fixedExpenses.length} gastos fijos. Escribe "mis fijos" para verlos.`
+    );
+    return;
+  }
+
+  const expense = fixedExpenses[index - 1];
+
+  if (!expense.is_active) {
+    await sendWhatsApp(user.phone,
+      `"${expense.description}" ya está pausado.\n` +
+      `Escribe "activar fijo ${index}" para reactivarlo.`
+    );
+    return;
+  }
+
+  await updateFixedExpense(expense.id, user.id, { is_active: false });
+
+  await sendWhatsApp(user.phone,
+    `✅ "${expense.description}" pausado. No recibirás recordatorios hasta que lo reactives con "activar fijo ${index}".`
+  );
+}
+
+// Handler: Activar gasto fijo
+async function handleActivateFixedExpense(user, data) {
+  const { index } = data;
+
+  if (!index || index < 1) {
+    await sendWhatsApp(user.phone,
+      '🤔 Indica el número del gasto fijo a activar.\n' +
+      'Ej: "activar fijo 1"'
+    );
+    return;
+  }
+
+  const fixedExpenses = await getFixedExpenses(user.id, false);
+
+  if (index > fixedExpenses.length) {
+    await sendWhatsApp(user.phone,
+      `❌ No existe el gasto fijo #${index}.\n` +
+      `Tienes ${fixedExpenses.length} gastos fijos. Escribe "mis fijos" para verlos.`
+    );
+    return;
+  }
+
+  const expense = fixedExpenses[index - 1];
+
+  if (expense.is_active) {
+    await sendWhatsApp(user.phone,
+      `"${expense.description}" ya está activo.`
+    );
+    return;
+  }
+
+  await updateFixedExpense(expense.id, user.id, { is_active: true });
+
+  await sendWhatsApp(user.phone,
+    `✅ "${expense.description}" reactivado. Recibirás recordatorios ${expense.reminder_day ? `el día ${expense.reminder_day}` : 'cuando configures el día'}.`
+  );
+}
+
+// Handler: Establecer día de recordatorio
+async function handleSetReminderDay(user, data) {
+  const { day, fixedExpenseId } = data;
+
+  // Si viene de clasificación de Claude, usar el día del data
+  const reminderDay = day || extractReminderDay(String(data.day));
+
+  if (!reminderDay || reminderDay < 1 || reminderDay > 31) {
+    await sendWhatsApp(user.phone,
+      '🤔 El día debe ser un número entre 1 y 31.\n' +
+      'Ej: "5", "día 15", "el 20"'
+    );
+    return;
+  }
+
+  // Si hay fixedExpenseId en data, usarlo; si no, usar pending
+  const expenseId = fixedExpenseId || user.pending_fixed_expense_id;
+
+  if (!expenseId || expenseId < 0) {
+    // Es una transacción pendiente de conversión, no un fixed expense
+    await sendWhatsApp(user.phone,
+      '🤔 No hay un gasto fijo pendiente de configurar.\n' +
+      'Primero registra un gasto fijo con "gasto fijo [descripción] [monto]"'
+    );
+    return;
+  }
+
+  // Actualizar reminder_day
+  await updateFixedExpense(expenseId, user.id, { reminder_day: reminderDay });
+
+  // Limpiar pending
+  await clearPendingFixedExpense(user.id);
+
+  await sendWhatsApp(user.phone,
+    `✅ Listo, te recordaré el día ${reminderDay} de cada mes.`
+  );
+}
+
+// Handler: Marcar gasto reciente como fijo
+async function handleMarkAsFixed(user) {
+  const pendingId = user.pending_fixed_expense_id;
+
+  if (!pendingId) {
+    await sendWhatsApp(user.phone,
+      '🤔 No hay un gasto reciente para marcar como fijo.'
+    );
+    return;
+  }
+
+  // Si es negativo, es el ID de una transacción
+  if (pendingId < 0) {
+    const transactionId = Math.abs(pendingId);
+
+    // Obtener la transacción
+    const txResult = await pool.query(
+      `SELECT t.*, c.name as category_name, c.emoji as category_emoji
+       FROM transactions t
+       LEFT JOIN categories c ON t.category_id = c.id
+       WHERE t.id = $1 AND t.user_id = $2`,
+      [transactionId, user.id]
+    );
+
+    if (txResult.rows.length === 0) {
+      await clearPendingFixedExpense(user.id);
+      await sendWhatsApp(user.phone,
+        '🤔 No encontré el gasto. Intenta registrarlo de nuevo como "gasto fijo [descripción] [monto]".'
+      );
+      return;
+    }
+
+    const tx = txResult.rows[0];
+
+    // Actualizar transacción a fixed
+    await pool.query(
+      'UPDATE transactions SET expense_type = $1 WHERE id = $2',
+      ['fixed', transactionId]
+    );
+
+    // Crear fixed_expense
+    const fixedExpense = await createFixedExpense(
+      user.id,
+      tx.description || tx.category_name,
+      parseFloat(tx.amount),
+      tx.category_id,
+      null
+    );
+
+    // Guardar para preguntar día
+    await setPendingFixedExpense(user.id, fixedExpense.id);
+
+    await sendWhatsApp(user.phone,
+      `📌 Marcado como fijo. ¿Qué día del mes? (ej: "5")\n\n` +
+      `Escribe "saltar" si no quieres recordatorio.`
+    );
+  } else {
+    // Ya es un fixed_expense, probablemente esperando día
+    await sendWhatsApp(user.phone,
+      `¿Qué día del mes suele ser este gasto? (ej: "5" o "día 15")\n\n` +
+      `Escribe "saltar" si no quieres recordatorio.`
+    );
+  }
 }
 
 // ============================================
@@ -1312,18 +2046,19 @@ async function handleOnboarding(user, message) {
         `"Gasté 15000 en Jumbo"\n` +
         `"5 lucas en Uber"\n` +
         `"Almuerzo 8000"\n\n` +
+        `📌 GASTOS FIJOS (arriendo, servicios, suscripciones):\n` +
+        `"Gasto fijo arriendo 450000"\n` +
+        `"Fijo Netflix 6990"\n` +
+        `"Mis fijos" para ver todos\n\n` +
         `📊 CONSULTAR GASTOS:\n` +
         `"¿Cuánto gasté esta semana?"\n` +
-        `"Detalle de comida del mes"\n` +
-        `"¿Cuánto llevo gastado?"\n\n` +
+        `"Detalle de comida del mes"\n\n` +
         `💰 PONER PRESUPUESTOS:\n` +
-        `"Máximo 300000 en comida"\n` +
-        `"Presupuesto de 50000 en transporte"\n\n` +
-        `📈 VER CÓMO VAS:\n` +
-        `"¿Cómo van mis presupuestos?"\n\n` +
+        `"Máximo 300000 en comida"\n\n` +
         `💡 PEDIRME CONSEJOS:\n` +
         `"¿Puedo comprar un auto de 5 palos?"\n` +
         `"¿Cómo ahorro más?"\n\n` +
+        `💡 Tip: Marca gastos como FIJOS y te recordaré cada mes.\n\n` +
         `¡Empieza registrando tu primer gasto! 🚀`
       );
       break;
@@ -1501,18 +2236,18 @@ Responde SOLO con el consejo directo, sin preámbulos como "Consejo:" o "Te reco
 // ============================================
 
 async function handleTransaction(user, data) {
-  const { amount, category, description, is_income } = data;
-  
+  const { amount, category, description, is_income, is_fixed, ask_reminder_day } = data;
+
   // Obtener category_id desde DB
   const categoryName = (category || 'otros').toLowerCase();
   const categoryType = is_income ? 'income' : 'expense';
-  
+
   const categoryResult = await pool.query(
-    `SELECT id, name, emoji FROM categories 
+    `SELECT id, name, emoji FROM categories
      WHERE LOWER(name) = $1 AND type = $2 AND is_active = true`,
     [categoryName, categoryType]
   );
-  
+
   let categoryId, categoryRealName, categoryEmoji;
   if (categoryResult.rows.length === 0) {
     console.error(`❌ Category not found: ${categoryName} (${categoryType})`);
@@ -1537,29 +2272,95 @@ async function handleTransaction(user, data) {
     categoryRealName = categoryResult.rows[0].name;
     categoryEmoji = categoryResult.rows[0].emoji;
   }
-  
-  // Insertar transacción con category_id
-  await pool.query(
-    `INSERT INTO transactions (user_id, amount, category_id, description, date, is_income)
-     VALUES ($1, $2, $3, $4, CURRENT_DATE, $5)`,
-    [user.id, amount, categoryId, description || '', is_income || false]
+
+  // Determinar expense_type
+  const expenseType = is_fixed ? 'fixed' : 'variable';
+
+  // Insertar transacción con category_id y expense_type
+  const txResult = await pool.query(
+    `INSERT INTO transactions (user_id, amount, category_id, description, date, is_income, expense_type)
+     VALUES ($1, $2, $3, $4, CURRENT_DATE, $5, $6)
+     RETURNING id`,
+    [user.id, amount, categoryId, description || '', is_income || false, expenseType]
   );
-  
+
+  const transactionId = txResult.rows[0].id;
+
   // Mensaje variado con nombre real de BD y emoji
   const variations = is_income ? confirmations.income : confirmations.transaction;
   const confirmMessage = randomVariation(variations)(`${categoryEmoji} ${categoryRealName}`);
-  
+
   let reply = `${confirmMessage}\n\n`;
   reply += `💵 $${Number(amount).toLocaleString('es-CL')}\n`;
   if (description) reply += `📝 ${description}\n`;
-  
+
+  // Si es gasto fijo, crear registro en fixed_expenses y preguntar día
+  if (is_fixed && !is_income) {
+    reply += `📌 Marcado como FIJO\n`;
+
+    // Crear o actualizar fixed_expense
+    const existingFixed = await findFixedExpenseByDescription(user.id, description || categoryRealName);
+
+    let fixedExpense;
+    if (existingFixed) {
+      // Actualizar monto si ya existe
+      fixedExpense = await updateFixedExpense(existingFixed.id, user.id, {
+        typical_amount: amount,
+        category_id: categoryId
+      });
+    } else {
+      // Crear nuevo fixed_expense
+      fixedExpense = await createFixedExpense(
+        user.id,
+        description || categoryRealName,
+        amount,
+        categoryId,
+        null // reminder_day se establecerá después
+      );
+    }
+
+    // Guardar referencia para pregunta de reminder_day
+    if (ask_reminder_day && fixedExpense) {
+      await setPendingFixedExpense(user.id, fixedExpense.id);
+
+      await sendWhatsApp(user.phone, reply);
+
+      // Preguntar día de recordatorio
+      await sendWhatsApp(user.phone,
+        '¿Qué día del mes suele ser este gasto? (ej: "5" o "día 15")\n\n' +
+        'Escribe "saltar" si no quieres recordatorio.'
+      );
+      return;
+    }
+  }
+
   await sendWhatsApp(user.phone, reply);
-  
+
+  // Si parece gasto fijo pero no se marcó como tal, sugerir
+  if (!is_fixed && !is_income && looksLikeFixedExpense(description)) {
+    // Guardar referencia a la transacción para posible conversión
+    await pool.query(
+      'UPDATE users SET pending_fixed_expense_id = $1 WHERE id = $2',
+      [-transactionId, user.id] // Usar negativo para indicar que es una transacción, no un fixed_expense
+    );
+
+    setTimeout(async () => {
+      try {
+        await sendWhatsApp(user.phone,
+          '💡 ¿Este gasto se repite cada mes? Responde "fijo" para recordatorios.'
+        );
+      } catch (error) {
+        console.error('❌ Error sending fixed suggestion:', error);
+      }
+    }, 1000);
+    return;
+  }
+
   // Verificar alertas de presupuesto (pasar category_id en vez de nombre)
   if (categoryId) {
     await checkBudgetAlerts(user, categoryId);
   }
-  
+
   // Sistema de alertas inteligentes (solo para gastos, no ingresos)
   // Solo si el usuario completó el onboarding
   if (!is_income && user.monthly_income && user.savings_goal) {
@@ -1570,7 +2371,7 @@ async function handleTransaction(user, data) {
       // No romper el flujo si las alertas fallan
     }
   }
-  
+
   // Verificar si debe sugerir actualización de income
   // Solo después de transacciones y si completó onboarding
   if (user.onboarding_complete) {
@@ -1711,27 +2512,28 @@ async function handleQuery(user, data) {
     return;
   }
   
-  // Modo resumen (agregado por categoría)
+  // Modo resumen (agregado por categoría y tipo de gasto)
   let query = `
-    SELECT 
+    SELECT
       c.name as category,
       c.emoji,
+      t.expense_type,
       SUM(CASE WHEN t.is_income = false THEN t.amount ELSE 0 END) as expenses,
       SUM(CASE WHEN t.is_income = true THEN t.amount ELSE 0 END) as income
     FROM transactions t
     JOIN categories c ON t.category_id = c.id
     WHERE t.user_id = $1 AND ${dateFilter}
   `;
-  
+
   const params = [user.id];
-  
+
   if (categoryId) {
     query += ` AND t.category_id = $2`;
     params.push(categoryId);
   }
-  
-  query += ' GROUP BY c.id, c.name, c.emoji ORDER BY expenses DESC';
-  
+
+  query += ' GROUP BY c.id, c.name, c.emoji, t.expense_type ORDER BY t.expense_type, expenses DESC';
+
   const result = await pool.query(query, params);
   
   if (result.rows.length === 0) {
@@ -1739,34 +2541,88 @@ async function handleQuery(user, data) {
     await sendWhatsApp(user.phone, `No tienes gastos registrados${catText} ${periodText} 📊`);
     return;
   }
-  
+
   const catText = category ? ` - ${category.charAt(0).toUpperCase() + category.slice(1)}` : '';
   const nameGreeting = user.name ? `${user.name}, aquí está tu ` : '';
   let reply = `📊 ${nameGreeting}Resumen ${periodText}${catText}:\n\n`;
-  
-  let totalExpenses = 0;
+
+  // Separar por tipo de gasto
+  const fixedExpenses = {};
+  const variableExpenses = {};
+  let totalFixed = 0;
+  let totalVariable = 0;
   let totalIncome = 0;
-  
+
   result.rows.forEach(row => {
     const expenses = parseFloat(row.expenses);
     const income = parseFloat(row.income);
-    totalExpenses += expenses;
+    const expenseType = row.expense_type || 'variable';
+
     totalIncome += income;
-    
+
     if (expenses > 0) {
-      const emoji = row.emoji || '💸';
-      reply += `${emoji} ${row.category}: $${expenses.toLocaleString('es-CL')}\n`;
+      if (expenseType === 'fixed') {
+        if (!fixedExpenses[row.category]) {
+          fixedExpenses[row.category] = { emoji: row.emoji, amount: 0 };
+        }
+        fixedExpenses[row.category].amount += expenses;
+        totalFixed += expenses;
+      } else {
+        if (!variableExpenses[row.category]) {
+          variableExpenses[row.category] = { emoji: row.emoji, amount: 0 };
+        }
+        variableExpenses[row.category].amount += expenses;
+        totalVariable += expenses;
+      }
     }
   });
-  
-  reply += `\n━━━━━━━━━━━━━\n`;
-  reply += `Total gastado: $${totalExpenses.toLocaleString('es-CL')}\n`;
-  
+
+  const totalExpenses = totalFixed + totalVariable;
+
+  // Mostrar ingresos si hay
   if (totalIncome > 0) {
-    reply += `Total ingresos: $${totalIncome.toLocaleString('es-CL')}\n`;
-    reply += `Balance: $${(totalIncome - totalExpenses).toLocaleString('es-CL')}`;
+    reply += `💰 Ingresos: $${totalIncome.toLocaleString('es-CL')}\n\n`;
   }
-  
+
+  // Mostrar gastos fijos
+  if (Object.keys(fixedExpenses).length > 0) {
+    const fixedPercent = totalIncome > 0 ? Math.round((totalFixed / totalIncome) * 100) : 0;
+    reply += `📌 Gastos Fijos: $${totalFixed.toLocaleString('es-CL')}`;
+    if (totalIncome > 0) reply += ` (${fixedPercent}%)`;
+    reply += `\n`;
+
+    Object.keys(fixedExpenses).sort().forEach(cat => {
+      const { emoji, amount } = fixedExpenses[cat];
+      reply += `   • ${emoji || '💸'} ${cat}: $${amount.toLocaleString('es-CL')}\n`;
+    });
+    reply += `\n`;
+  }
+
+  // Mostrar gastos variables
+  if (Object.keys(variableExpenses).length > 0) {
+    const variablePercent = totalIncome > 0 ? Math.round((totalVariable / totalIncome) * 100) : 0;
+    reply += `🛒 Gastos Variables: $${totalVariable.toLocaleString('es-CL')}`;
+    if (totalIncome > 0) reply += ` (${variablePercent}%)`;
+    reply += `\n`;
+
+    Object.keys(variableExpenses).sort((a, b) =>
+      variableExpenses[b].amount - variableExpenses[a].amount
+    ).forEach(cat => {
+      const { emoji, amount } = variableExpenses[cat];
+      reply += `   • ${emoji || '💸'} ${cat}: $${amount.toLocaleString('es-CL')}\n`;
+    });
+  }
+
+  reply += `\n━━━━━━━━━━━━━\n`;
+
+  if (totalIncome > 0) {
+    const balance = totalIncome - totalExpenses;
+    const sign = balance >= 0 ? '+' : '';
+    reply += `💵 Balance: ${sign}$${balance.toLocaleString('es-CL')}`;
+  } else {
+    reply += `Total gastado: $${totalExpenses.toLocaleString('es-CL')}`;
+  }
+
   await sendWhatsApp(user.phone, reply);
   
   // Mensaje de upgrade a Premium (solo si está habilitado)
@@ -2148,6 +3004,202 @@ async function sendWhatsApp(to, message) {
   } catch (error) {
     console.error('❌ Twilio error:', error);
   }
+}
+
+// ============================================
+// CRON ENDPOINTS - FIXED EXPENSES REMINDERS
+// ============================================
+
+// Secret para autenticar llamadas del cron
+const CRON_SECRET = process.env.CRON_SECRET || 'ordenate-cron-secret-2026';
+
+// Middleware para autenticar llamadas del cron
+function authenticateCron(req, res, next) {
+  const authHeader = req.headers.authorization;
+
+  if (!authHeader || !authHeader.startsWith('Bearer ')) {
+    console.log('⚠️ CRON: Missing or invalid authorization header');
+    return res.status(401).json({ error: 'Unauthorized' });
+  }
+
+  const token = authHeader.substring(7);
+
+  if (token !== CRON_SECRET) {
+    console.log('⚠️ CRON: Invalid token');
+    return res.status(403).json({ error: 'Forbidden' });
+  }
+
+  next();
+}
+
+// Función principal para enviar recordatorios de gastos fijos
+async function sendFixedExpenseReminders() {
+  // Obtener fecha en zona horaria de Chile
+  const now = new Date();
+  const chileTime = new Date(now.toLocaleString('en-US', { timeZone: 'America/Santiago' }));
+  const dayOfMonth = chileTime.getDate();
+  const currentMonth = chileTime.toLocaleString('es-CL', { month: 'long' });
+
+  console.log(`📅 Running fixed expense reminders for day ${dayOfMonth} (${currentMonth})`);
+
+  // Buscar usuarios con gastos fijos para hoy
+  const usersWithReminders = await getFixedExpensesForReminderDay(dayOfMonth);
+
+  console.log(`👥 Found ${usersWithReminders.length} users with reminders for today`);
+
+  let sentCount = 0;
+  let errorCount = 0;
+
+  for (const userReminder of usersWithReminders) {
+    try {
+      const { phone, name, expenses } = userReminder;
+      const total = expenses.reduce((sum, e) => sum + parseFloat(e.amount), 0);
+
+      // Formatear lista de gastos
+      const expensesList = expenses.map(e => {
+        const emoji = e.emoji || '💸';
+        return `• ${emoji} ${e.description}: $${parseFloat(e.amount).toLocaleString('es-CL')}`;
+      }).join('\n');
+
+      // Mensaje de recordatorio
+      const message =
+        `Hola ${name || 'usuario'} 👋\n\n` +
+        `Recordatorio de gastos fijos de ${currentMonth}:\n\n` +
+        `${expensesList}\n\n` +
+        `Total estimado: $${total.toLocaleString('es-CL')}\n\n` +
+        `Responde:\n` +
+        `"registrar todos" - Registrar todos los gastos\n` +
+        `"ajustar montos" - Ajustar antes de registrar\n` +
+        `"saltar mes" - No registrar este mes`;
+
+      await sendWhatsApp(phone, message);
+
+      // Guardar estado para procesar respuesta
+      const userId = userReminder.user_id;
+      await pool.query(
+        `UPDATE users SET pending_fixed_expense_id = -999 WHERE id = $1`,
+        [userId] // -999 indica que estamos esperando respuesta de recordatorio
+      );
+
+      console.log(`✅ Reminder sent to ${phone}`);
+      sentCount++;
+    } catch (error) {
+      console.error(`❌ Error sending reminder to ${userReminder.phone}:`, error);
+      errorCount++;
+    }
+  }
+
+  return {
+    day: dayOfMonth,
+    month: currentMonth,
+    usersNotified: sentCount,
+    errors: errorCount
+  };
+}
+
+// Endpoint para ejecutar recordatorios (llamado por cron externo)
+app.post('/api/cron/send-reminders', authenticateCron, async (req, res) => {
+  console.log('🔔 Cron job triggered: send-reminders');
+
+  try {
+    const result = await sendFixedExpenseReminders();
+    console.log('✅ Cron job completed:', result);
+    res.json({
+      success: true,
+      ...result
+    });
+  } catch (error) {
+    console.error('❌ Cron error:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message
+    });
+  }
+});
+
+// Endpoint de test para verificar configuración (sin autenticación, solo para debug)
+app.get('/api/cron/test', generalLimiter, async (req, res) => {
+  const chileTime = new Date().toLocaleString('en-US', { timeZone: 'America/Santiago' });
+  const dayOfMonth = new Date(chileTime).getDate();
+
+  // Contar usuarios con recordatorios para hoy
+  const countResult = await pool.query(
+    `SELECT COUNT(DISTINCT user_id) as count
+     FROM fixed_expenses
+     WHERE reminder_day = $1 AND is_active = true`,
+    [dayOfMonth]
+  );
+
+  res.json({
+    status: 'ok',
+    timezone: 'America/Santiago',
+    currentTime: chileTime,
+    dayOfMonth: dayOfMonth,
+    usersWithRemindersToday: parseInt(countResult.rows[0].count)
+  });
+});
+
+// Handler para respuestas a recordatorios de gastos fijos
+async function handleFixedExpenseReminderResponse(user, message) {
+  const msgLower = message.toLowerCase().trim();
+
+  // Registrar todos
+  if (msgLower.includes('registrar todos') || msgLower === 'registrar' || msgLower === 'todos') {
+    const fixedExpenses = await getFixedExpenses(user.id, true);
+
+    if (fixedExpenses.length === 0) {
+      await clearPendingFixedExpense(user.id);
+      await sendWhatsApp(user.phone, '🤔 No tienes gastos fijos activos para registrar.');
+      return true;
+    }
+
+    // Registrar todas las transacciones
+    let total = 0;
+    let registeredList = [];
+
+    for (const expense of fixedExpenses) {
+      await pool.query(
+        `INSERT INTO transactions (user_id, amount, category_id, description, date, is_income, expense_type)
+         VALUES ($1, $2, $3, $4, CURRENT_DATE, false, 'fixed')`,
+        [user.id, expense.typical_amount, expense.category_id, expense.description]
+      );
+      total += parseFloat(expense.typical_amount);
+      const emoji = expense.category_emoji || '💸';
+      registeredList.push(`• ${emoji} ${expense.description}: $${parseFloat(expense.typical_amount).toLocaleString('es-CL')}`);
+    }
+
+    const currentMonth = new Date().toLocaleString('es-CL', { month: 'long' });
+
+    await clearPendingFixedExpense(user.id);
+    await sendWhatsApp(user.phone,
+      `✅ Registrados:\n${registeredList.join('\n')}\n\n` +
+      `Total: $${total.toLocaleString('es-CL')} agregado a tus gastos de ${currentMonth}.`
+    );
+    return true;
+  }
+
+  // Ajustar montos
+  if (msgLower.includes('ajustar') || msgLower.includes('modificar')) {
+    await clearPendingFixedExpense(user.id);
+    await sendWhatsApp(user.phone,
+      'Ok, dime cuáles pagaste y el monto real:\n\n' +
+      '(ej: "arriendo 450000, luz 52000")\n\n' +
+      'O escribe "cancelar" para no registrar nada.'
+    );
+    return true;
+  }
+
+  // Saltar mes
+  if (msgLower.includes('saltar') || msgLower.includes('skip') || msgLower === 'no') {
+    await clearPendingFixedExpense(user.id);
+    await sendWhatsApp(user.phone,
+      '👍 Entendido, no registro nada.\n' +
+      'Te recuerdo el próximo mes.'
+    );
+    return true;
+  }
+
+  return false; // No se procesó
 }
 
 // ============================================
