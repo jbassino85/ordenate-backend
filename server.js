@@ -63,90 +63,14 @@ const pool = new Pool({
   statement_timeout: 30000         // 30 seconds query timeout
 });
 
-// Test DB connection and run migrations
-pool.query('SELECT NOW()', async (err, res) => {
+// Test DB connection
+pool.query('SELECT NOW()', (err, res) => {
   if (err) {
     console.error('❌ Database connection error:', err);
   } else {
     console.log('✅ Database connected:', res.rows[0].now);
-
-    // Run migrations
-    try {
-      await runMigrations();
-      console.log('✅ Migrations completed');
-    } catch (migrationError) {
-      console.error('❌ Migration error:', migrationError);
-    }
   }
 });
-
-// ============================================
-// DATABASE MIGRATIONS
-// ============================================
-
-async function runMigrations() {
-  // Migration 001: Add fixed expenses feature
-  try {
-    // 1. Add expense_type column to transactions
-    await pool.query(`
-      ALTER TABLE transactions
-      ADD COLUMN IF NOT EXISTS expense_type VARCHAR(10) DEFAULT 'variable'
-    `);
-
-    // Add check constraint if not exists (PostgreSQL doesn't have IF NOT EXISTS for constraints)
-    await pool.query(`
-      DO $$
-      BEGIN
-        IF NOT EXISTS (
-          SELECT 1 FROM pg_constraint WHERE conname = 'transactions_expense_type_check'
-        ) THEN
-          ALTER TABLE transactions
-          ADD CONSTRAINT transactions_expense_type_check
-          CHECK (expense_type IN ('fixed', 'variable'));
-        END IF;
-      END $$;
-    `);
-
-    // 2. Create fixed_expenses table
-    await pool.query(`
-      CREATE TABLE IF NOT EXISTS fixed_expenses (
-        id SERIAL PRIMARY KEY,
-        user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-        description VARCHAR(255) NOT NULL,
-        typical_amount DECIMAL(12,2) NOT NULL,
-        category_id INTEGER REFERENCES categories(id),
-        reminder_day INTEGER CHECK (reminder_day BETWEEN 1 AND 31),
-        is_active BOOLEAN DEFAULT true,
-        created_at TIMESTAMP DEFAULT NOW(),
-        updated_at TIMESTAMP DEFAULT NOW()
-      )
-    `);
-
-    // 3. Create indexes
-    await pool.query(`
-      CREATE INDEX IF NOT EXISTS idx_fixed_expenses_user ON fixed_expenses(user_id)
-    `);
-    await pool.query(`
-      CREATE INDEX IF NOT EXISTS idx_fixed_expenses_reminder ON fixed_expenses(reminder_day, is_active)
-    `);
-    await pool.query(`
-      CREATE INDEX IF NOT EXISTS idx_transactions_expense_type ON transactions(expense_type)
-    `);
-
-    // 4. Add pending_fixed_expense_id column to users for conversation state
-    await pool.query(`
-      ALTER TABLE users
-      ADD COLUMN IF NOT EXISTS pending_fixed_expense_id INTEGER
-    `);
-
-    console.log('  ✓ Migration 001: Fixed expenses feature');
-  } catch (error) {
-    // Ignore errors for already existing objects
-    if (!error.message.includes('already exists')) {
-      throw error;
-    }
-  }
-}
 
 // Anthropic Claude Client
 const anthropic = new Anthropic({
