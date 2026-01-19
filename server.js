@@ -255,13 +255,19 @@ async function processUserMessage(phone, message) {
       // Verificar si quiere cancelar
       if (['cancelar', 'saltar', 'skip', 'no', 'omitir'].includes(msgLower)) {
         await clearPendingFixedExpense(user.id);
-        await sendWhatsApp(user.phone, '👍 Ok, cancelado.');
+        await sendWhatsApp(user.phone, '👍 Ok, sin recordatorio. Gasto fijo guardado.');
         return;
       }
 
-      // Intentar extraer monto y/o día del mensaje
-      const amount = extractAmount(message);
+      // Intentar extraer día del mensaje
       const day = extractReminderDay(message);
+
+      // Si el mensaje es SOLO un número entre 1-31, tratarlo como día únicamente
+      // (evita confundir "10" como monto cuando solo preguntamos por el día)
+      const isJustADay = /^\d{1,2}$/.test(msgLower) && day !== null;
+
+      // Solo extraer monto si NO es solo un día (ej: "500000" o "500000 día 10")
+      const amount = isJustADay ? null : extractAmount(message);
 
       // Si hay monto o día, actualizar el gasto fijo
       if (amount || day) {
@@ -272,10 +278,15 @@ async function processUserMessage(phone, message) {
         await updateFixedExpense(user.pending_fixed_expense_id, user.id, updates);
         await clearPendingFixedExpense(user.id);
 
-        let confirmMsg = '✅ Actualizado:';
-        if (amount) confirmMsg += ` monto a $${amount.toLocaleString('es-CL')}`;
-        if (amount && day) confirmMsg += ' y';
-        if (day) confirmMsg += ` día a ${day}`;
+        let confirmMsg = '✅ ';
+        if (day && !amount) {
+          confirmMsg += `Recordatorio configurado para el día ${day} de cada mes.`;
+        } else {
+          confirmMsg += 'Actualizado:';
+          if (amount) confirmMsg += ` monto a $${amount.toLocaleString('es-CL')}`;
+          if (amount && day) confirmMsg += ' y';
+          if (day) confirmMsg += ` día ${day}`;
+        }
 
         await sendWhatsApp(user.phone, confirmMsg);
         return;
@@ -284,10 +295,8 @@ async function processUserMessage(phone, message) {
       // Si no detectamos monto ni día, pedir de nuevo
       await sendWhatsApp(user.phone,
         '🤔 No entendí. Escribe:\n' +
-        '- Un monto (ej: "500000")\n' +
-        '- Un día (ej: "día 15")\n' +
-        '- Ambos (ej: "500000 día 10")\n' +
-        '- O "cancelar" para salir.'
+        '- Un día del mes (ej: "15")\n' +
+        '- O "saltar" si no quieres recordatorio.'
       );
       return;
     }
@@ -1171,10 +1180,10 @@ async function registerFixedExpensesAsTransactions(userId, expenses, month = nul
 
   for (const expense of expenses) {
     const result = await pool.query(
-      `INSERT INTO transactions (user_id, amount, category_id, description, date, is_income, expense_type)
-       VALUES ($1, $2, $3, $4, CURRENT_DATE, false, 'fixed')
+      `INSERT INTO transactions (user_id, amount, category_id, description, date, is_income, expense_type, fixed_expense_id)
+       VALUES ($1, $2, $3, $4, CURRENT_DATE, false, 'fixed', $5)
        RETURNING *`,
-      [userId, expense.amount || expense.typical_amount, expense.category_id, expense.description]
+      [userId, expense.amount || expense.typical_amount, expense.category_id, expense.description, expense.id]
     );
     results.push(result.rows[0]);
   }
@@ -1836,12 +1845,6 @@ async function handleMarkAsFixed(user) {
     return;
   }
 
-  // Actualizar transacción a fixed
-  await pool.query(
-    'UPDATE transactions SET expense_type = $1 WHERE id = $2',
-    ['fixed', transactionId]
-  );
-
   let fixedExpense;
   if (existingFixed) {
     // Reactivar el fixed_expense existente (fue rechazado antes)
@@ -1859,6 +1862,12 @@ async function handleMarkAsFixed(user) {
       null
     );
   }
+
+  // Actualizar transacción a fixed y linkear con fixed_expense
+  await pool.query(
+    'UPDATE transactions SET expense_type = $1, fixed_expense_id = $2 WHERE id = $3',
+    ['fixed', fixedExpense.id, transactionId]
+  );
 
   // Guardar para preguntar día
   await setPendingFixedExpense(user.id, fixedExpense.id);
@@ -2294,7 +2303,8 @@ async function handleTransaction(user, data) {
       // Actualizar monto si ya existe
       fixedExpense = await updateFixedExpense(existingFixed.id, user.id, {
         typical_amount: amount,
-        category_id: categoryId
+        category_id: categoryId,
+        is_active: true
       });
     } else {
       // Crear nuevo fixed_expense
@@ -2306,6 +2316,12 @@ async function handleTransaction(user, data) {
         null // reminder_day se establecerá después
       );
     }
+
+    // Linkear transacción con fixed_expense
+    await pool.query(
+      'UPDATE transactions SET fixed_expense_id = $1 WHERE id = $2',
+      [fixedExpense.id, transactionId]
+    );
 
     // Guardar referencia para pregunta de reminder_day
     if (ask_reminder_day && fixedExpense) {
@@ -3162,9 +3178,9 @@ async function handleFixedExpenseReminderResponse(user, message) {
 
     for (const expense of fixedExpenses) {
       await pool.query(
-        `INSERT INTO transactions (user_id, amount, category_id, description, date, is_income, expense_type)
-         VALUES ($1, $2, $3, $4, CURRENT_DATE, false, 'fixed')`,
-        [user.id, expense.typical_amount, expense.category_id, expense.description]
+        `INSERT INTO transactions (user_id, amount, category_id, description, date, is_income, expense_type, fixed_expense_id)
+         VALUES ($1, $2, $3, $4, CURRENT_DATE, false, 'fixed', $5)`,
+        [user.id, expense.typical_amount, expense.category_id, expense.description, expense.id]
       );
       total += parseFloat(expense.typical_amount);
       const emoji = expense.category_emoji || '💸';
