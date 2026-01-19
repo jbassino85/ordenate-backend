@@ -255,13 +255,19 @@ async function processUserMessage(phone, message) {
       // Verificar si quiere cancelar
       if (['cancelar', 'saltar', 'skip', 'no', 'omitir'].includes(msgLower)) {
         await clearPendingFixedExpense(user.id);
-        await sendWhatsApp(user.phone, '👍 Ok, cancelado.');
+        await sendWhatsApp(user.phone, '👍 Ok, sin recordatorio. Gasto fijo guardado.');
         return;
       }
 
-      // Intentar extraer monto y/o día del mensaje
-      const amount = extractAmount(message);
+      // Intentar extraer día del mensaje
       const day = extractReminderDay(message);
+
+      // Si el mensaje es SOLO un número entre 1-31, tratarlo como día únicamente
+      // (evita confundir "10" como monto cuando solo preguntamos por el día)
+      const isJustADay = /^\d{1,2}$/.test(msgLower) && day !== null;
+
+      // Solo extraer monto si NO es solo un día (ej: "500000" o "500000 día 10")
+      const amount = isJustADay ? null : extractAmount(message);
 
       // Si hay monto o día, actualizar el gasto fijo
       if (amount || day) {
@@ -272,10 +278,15 @@ async function processUserMessage(phone, message) {
         await updateFixedExpense(user.pending_fixed_expense_id, user.id, updates);
         await clearPendingFixedExpense(user.id);
 
-        let confirmMsg = '✅ Actualizado:';
-        if (amount) confirmMsg += ` monto a $${amount.toLocaleString('es-CL')}`;
-        if (amount && day) confirmMsg += ' y';
-        if (day) confirmMsg += ` día a ${day}`;
+        let confirmMsg = '✅ ';
+        if (day && !amount) {
+          confirmMsg += `Recordatorio configurado para el día ${day} de cada mes.`;
+        } else {
+          confirmMsg += 'Actualizado:';
+          if (amount) confirmMsg += ` monto a $${amount.toLocaleString('es-CL')}`;
+          if (amount && day) confirmMsg += ' y';
+          if (day) confirmMsg += ` día ${day}`;
+        }
 
         await sendWhatsApp(user.phone, confirmMsg);
         return;
@@ -284,10 +295,8 @@ async function processUserMessage(phone, message) {
       // Si no detectamos monto ni día, pedir de nuevo
       await sendWhatsApp(user.phone,
         '🤔 No entendí. Escribe:\n' +
-        '- Un monto (ej: "500000")\n' +
-        '- Un día (ej: "día 15")\n' +
-        '- Ambos (ej: "500000 día 10")\n' +
-        '- O "cancelar" para salir.'
+        '- Un día del mes (ej: "15")\n' +
+        '- O "saltar" si no quieres recordatorio.'
       );
       return;
     }
