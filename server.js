@@ -295,11 +295,27 @@ async function processUserMessage(phone, message) {
     // 3.7 Verificar si hay transacción pendiente de marcar como fijo (negativo)
     if (user.pending_fixed_expense_id && user.pending_fixed_expense_id < 0 && user.pending_fixed_expense_id !== -999) {
       const msgLower = message.toLowerCase().trim();
-      if (['fijo', 'es fijo', 'si fijo', 'sí fijo', 'hacerlo fijo'].includes(msgLower)) {
+      if (['fijo', 'es fijo', 'si fijo', 'sí fijo', 'hacerlo fijo', 'si', 'sí'].includes(msgLower)) {
         await handleMarkAsFixed(user);
         return;
       }
-      // Si no respondió "fijo", limpiar y continuar
+      // Si no respondió "fijo", crear registro inactivo para recordar el rechazo
+      // Así no volveremos a preguntar por este tipo de gasto
+      const transactionId = Math.abs(user.pending_fixed_expense_id);
+      const txResult = await pool.query(
+        `SELECT description, amount, category_id FROM transactions WHERE id = $1`,
+        [transactionId]
+      );
+      if (txResult.rows.length > 0) {
+        const tx = txResult.rows[0];
+        // Crear fixed_expense inactivo (is_active=false) para recordar que rechazó
+        await pool.query(
+          `INSERT INTO fixed_expenses (user_id, description, typical_amount, category_id, is_active)
+           VALUES ($1, $2, $3, $4, false)
+           ON CONFLICT DO NOTHING`,
+          [user.id, tx.description, tx.amount, tx.category_id]
+        );
+      }
       await clearPendingFixedExpense(user.id);
     }
 
@@ -528,8 +544,14 @@ CATEGORÍAS POSIBLES:
     Debe retornar: { day: número_del_día }
 
 15. MARK_AS_FIXED: Marcar un gasto reciente como fijo
-    Palabras clave: "fijo", "es fijo", "sí fijo", "si fijo", "hacerlo fijo"
-    SOLO usar cuando el usuario responde "fijo" después de que el bot sugiere marcarlo como fijo
+    Palabras clave: "hacer fijo", "hacerlo fijo", "marcar fijo", "último fijo", "ese es fijo"
+    Usar cuando el usuario quiere convertir su último gasto en gasto fijo
+    También usar si responde "fijo", "es fijo", "sí fijo" después de sugerencia del bot
+    Ejemplos:
+    - "hacer fijo" → marca el último gasto como fijo
+    - "hacerlo fijo"
+    - "ese gasto es fijo"
+    - "marcar como fijo"
     Debe retornar: {}
 
 16. OTHER: Otro tipo
@@ -1743,67 +1765,109 @@ async function handleSetReminderDay(user, data) {
 
 // Handler: Marcar gasto reciente como fijo
 async function handleMarkAsFixed(user) {
-  const pendingId = user.pending_fixed_expense_id;
+  let pendingId = user.pending_fixed_expense_id;
+  let transactionId = null;
 
+  // Si no hay pendingId, buscar la última transacción del usuario (últimos 10 min)
   if (!pendingId) {
-    await sendWhatsApp(user.phone,
-      '🤔 No hay un gasto reciente para marcar como fijo.'
-    );
-    return;
-  }
-
-  // Si es negativo, es el ID de una transacción
-  if (pendingId < 0) {
-    const transactionId = Math.abs(pendingId);
-
-    // Obtener la transacción
-    const txResult = await pool.query(
-      `SELECT t.*, c.name as category_name, c.emoji as category_emoji
-       FROM transactions t
-       LEFT JOIN categories c ON t.category_id = c.id
-       WHERE t.id = $1 AND t.user_id = $2`,
-      [transactionId, user.id]
+    const recentTx = await pool.query(
+      `SELECT id FROM transactions
+       WHERE user_id = $1
+         AND is_income = false
+         AND expense_type = 'variable'
+         AND created_at >= NOW() - INTERVAL '10 minutes'
+       ORDER BY created_at DESC
+       LIMIT 1`,
+      [user.id]
     );
 
-    if (txResult.rows.length === 0) {
-      await clearPendingFixedExpense(user.id);
+    if (recentTx.rows.length === 0) {
       await sendWhatsApp(user.phone,
-        '🤔 No encontré el gasto. Intenta registrarlo de nuevo como "gasto fijo [descripción] [monto]".'
+        '🤔 No encontré gastos recientes para marcar como fijo.\n\n' +
+        'Registra un gasto primero o usa "gasto fijo [descripción] [monto]".'
       );
       return;
     }
 
-    const tx = txResult.rows[0];
-
-    // Actualizar transacción a fixed
-    await pool.query(
-      'UPDATE transactions SET expense_type = $1 WHERE id = $2',
-      ['fixed', transactionId]
+    transactionId = recentTx.rows[0].id;
+  } else if (pendingId < 0 && pendingId !== -999) {
+    // Si es negativo, es el ID de una transacción pendiente de sugerencia
+    transactionId = Math.abs(pendingId);
+  } else if (pendingId > 0) {
+    // Ya es un fixed_expense, probablemente esperando día
+    await sendWhatsApp(user.phone,
+      `¿Qué día del mes suele ser este gasto? (ej: "5" o "día 15")\n\n` +
+      `Escribe "saltar" si no quieres recordatorio.`
     );
+    return;
+  } else {
+    await sendWhatsApp(user.phone,
+      '🤔 No hay un gasto para marcar como fijo.'
+    );
+    return;
+  }
 
-    // Crear fixed_expense
-    const fixedExpense = await createFixedExpense(
+  // Obtener la transacción
+  const txResult = await pool.query(
+    `SELECT t.*, c.name as category_name, c.emoji as category_emoji
+     FROM transactions t
+     LEFT JOIN categories c ON t.category_id = c.id
+     WHERE t.id = $1 AND t.user_id = $2`,
+    [transactionId, user.id]
+  );
+
+  if (txResult.rows.length === 0) {
+    await clearPendingFixedExpense(user.id);
+    await sendWhatsApp(user.phone,
+      '🤔 No encontré el gasto. Intenta registrarlo de nuevo como "gasto fijo [descripción] [monto]".'
+    );
+    return;
+  }
+
+  const tx = txResult.rows[0];
+
+  // Verificar si ya existe como fixed_expense
+  const existingFixed = await findFixedExpenseByDescription(user.id, tx.description);
+  if (existingFixed && existingFixed.is_active) {
+    await clearPendingFixedExpense(user.id);
+    await sendWhatsApp(user.phone,
+      `"${tx.description}" ya está en tus gastos fijos.`
+    );
+    return;
+  }
+
+  // Actualizar transacción a fixed
+  await pool.query(
+    'UPDATE transactions SET expense_type = $1 WHERE id = $2',
+    ['fixed', transactionId]
+  );
+
+  let fixedExpense;
+  if (existingFixed) {
+    // Reactivar el fixed_expense existente (fue rechazado antes)
+    fixedExpense = await updateFixedExpense(existingFixed.id, user.id, {
+      typical_amount: parseFloat(tx.amount),
+      is_active: true
+    });
+  } else {
+    // Crear nuevo fixed_expense
+    fixedExpense = await createFixedExpense(
       user.id,
       tx.description || tx.category_name,
       parseFloat(tx.amount),
       tx.category_id,
       null
     );
-
-    // Guardar para preguntar día
-    await setPendingFixedExpense(user.id, fixedExpense.id);
-
-    await sendWhatsApp(user.phone,
-      `📌 Marcado como fijo. ¿Qué día del mes? (ej: "5")\n\n` +
-      `Escribe "saltar" si no quieres recordatorio.`
-    );
-  } else {
-    // Ya es un fixed_expense, probablemente esperando día
-    await sendWhatsApp(user.phone,
-      `¿Qué día del mes suele ser este gasto? (ej: "5" o "día 15")\n\n` +
-      `Escribe "saltar" si no quieres recordatorio.`
-    );
   }
+
+  // Guardar para preguntar día
+  await setPendingFixedExpense(user.id, fixedExpense.id);
+
+  await sendWhatsApp(user.phone,
+    `📌 "${tx.description}" marcado como fijo.\n\n` +
+    `¿Qué día del mes suele ser? (ej: "5" o "día 15")\n` +
+    `Escribe "saltar" si no quieres recordatorio.`
+  );
 }
 
 // ============================================
@@ -2260,24 +2324,31 @@ async function handleTransaction(user, data) {
 
   await sendWhatsApp(user.phone, reply);
 
-  // Si parece gasto fijo pero no se marcó como tal, sugerir
+  // Si parece gasto fijo pero no se marcó como tal, sugerir SOLO la primera vez
   if (!is_fixed && !is_income && looksLikeFixedExpense(description)) {
-    // Guardar referencia a la transacción para posible conversión
-    await pool.query(
-      'UPDATE users SET pending_fixed_expense_id = $1 WHERE id = $2',
-      [-transactionId, user.id] // Usar negativo para indicar que es una transacción, no un fixed_expense
-    );
+    // Verificar si ya existe un fixed_expense con esta descripción (activo o no)
+    const existingFixed = await findFixedExpenseByDescription(user.id, description);
 
-    setTimeout(async () => {
-      try {
-        await sendWhatsApp(user.phone,
-          '💡 ¿Este gasto se repite cada mes? Responde "fijo" para recordatorios.'
-        );
-      } catch (error) {
-        console.error('❌ Error sending fixed suggestion:', error);
-      }
-    }, 1000);
-    return;
+    // Solo sugerir si NO existe previamente (primera vez que registra este gasto)
+    if (!existingFixed) {
+      // Guardar referencia a la transacción para posible conversión
+      await pool.query(
+        'UPDATE users SET pending_fixed_expense_id = $1 WHERE id = $2',
+        [-transactionId, user.id] // Usar negativo para indicar que es una transacción, no un fixed_expense
+      );
+
+      setTimeout(async () => {
+        try {
+          await sendWhatsApp(user.phone,
+            '💡 ¿Este gasto se repite cada mes? Responde "fijo" para recordatorios.'
+          );
+        } catch (error) {
+          console.error('❌ Error sending fixed suggestion:', error);
+        }
+      }, 1000);
+      return;
+    }
+    // Si ya existe fixed_expense (activo o rechazado previamente), no preguntar de nuevo
   }
 
   // Verificar alertas de presupuesto (pasar category_id en vez de nombre)
