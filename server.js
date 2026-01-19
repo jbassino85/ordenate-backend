@@ -3010,14 +3010,22 @@ const CRON_SECRET = process.env.CRON_SECRET || 'ordenate-cron-secret-2026';
 
 // Middleware para autenticar llamadas del cron
 function authenticateCron(req, res, next) {
+  // Aceptar tanto x-cron-secret header como Authorization Bearer
+  const cronSecret = req.headers['x-cron-secret'];
   const authHeader = req.headers.authorization;
 
-  if (!authHeader || !authHeader.startsWith('Bearer ')) {
-    console.log('⚠️ CRON: Missing or invalid authorization header');
-    return res.status(401).json({ error: 'Unauthorized' });
+  let token = null;
+
+  if (cronSecret) {
+    token = cronSecret;
+  } else if (authHeader && authHeader.startsWith('Bearer ')) {
+    token = authHeader.substring(7);
   }
 
-  const token = authHeader.substring(7);
+  if (!token) {
+    console.log('⚠️ CRON: Missing authentication header');
+    return res.status(401).json({ error: 'Unauthorized - use x-cron-secret header' });
+  }
 
   if (token !== CRON_SECRET) {
     console.log('⚠️ CRON: Invalid token');
