@@ -255,7 +255,7 @@ async function processUserMessage(phone, message) {
       // Verificar si quiere cancelar
       if (['cancelar', 'saltar', 'skip', 'no', 'omitir'].includes(msgLower)) {
         await clearPendingFixedExpense(user.id);
-        await sendWhatsApp(user.phone, '👍 Ok, sin recordatorio. Gasto fijo guardado.');
+        await sendWhatsApp(user.phone, '👍 Ok, cancelado.');
         return;
       }
 
