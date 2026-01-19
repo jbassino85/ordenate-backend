@@ -1180,10 +1180,10 @@ async function registerFixedExpensesAsTransactions(userId, expenses, month = nul
 
   for (const expense of expenses) {
     const result = await pool.query(
-      `INSERT INTO transactions (user_id, amount, category_id, description, date, is_income, expense_type)
-       VALUES ($1, $2, $3, $4, CURRENT_DATE, false, 'fixed')
+      `INSERT INTO transactions (user_id, amount, category_id, description, date, is_income, expense_type, fixed_expense_id)
+       VALUES ($1, $2, $3, $4, CURRENT_DATE, false, 'fixed', $5)
        RETURNING *`,
-      [userId, expense.amount || expense.typical_amount, expense.category_id, expense.description]
+      [userId, expense.amount || expense.typical_amount, expense.category_id, expense.description, expense.id]
     );
     results.push(result.rows[0]);
   }
@@ -1845,12 +1845,6 @@ async function handleMarkAsFixed(user) {
     return;
   }
 
-  // Actualizar transacción a fixed
-  await pool.query(
-    'UPDATE transactions SET expense_type = $1 WHERE id = $2',
-    ['fixed', transactionId]
-  );
-
   let fixedExpense;
   if (existingFixed) {
     // Reactivar el fixed_expense existente (fue rechazado antes)
@@ -1868,6 +1862,12 @@ async function handleMarkAsFixed(user) {
       null
     );
   }
+
+  // Actualizar transacción a fixed y linkear con fixed_expense
+  await pool.query(
+    'UPDATE transactions SET expense_type = $1, fixed_expense_id = $2 WHERE id = $3',
+    ['fixed', fixedExpense.id, transactionId]
+  );
 
   // Guardar para preguntar día
   await setPendingFixedExpense(user.id, fixedExpense.id);
@@ -2303,7 +2303,8 @@ async function handleTransaction(user, data) {
       // Actualizar monto si ya existe
       fixedExpense = await updateFixedExpense(existingFixed.id, user.id, {
         typical_amount: amount,
-        category_id: categoryId
+        category_id: categoryId,
+        is_active: true
       });
     } else {
       // Crear nuevo fixed_expense
@@ -2315,6 +2316,12 @@ async function handleTransaction(user, data) {
         null // reminder_day se establecerá después
       );
     }
+
+    // Linkear transacción con fixed_expense
+    await pool.query(
+      'UPDATE transactions SET fixed_expense_id = $1 WHERE id = $2',
+      [fixedExpense.id, transactionId]
+    );
 
     // Guardar referencia para pregunta de reminder_day
     if (ask_reminder_day && fixedExpense) {
@@ -3171,9 +3178,9 @@ async function handleFixedExpenseReminderResponse(user, message) {
 
     for (const expense of fixedExpenses) {
       await pool.query(
-        `INSERT INTO transactions (user_id, amount, category_id, description, date, is_income, expense_type)
-         VALUES ($1, $2, $3, $4, CURRENT_DATE, false, 'fixed')`,
-        [user.id, expense.typical_amount, expense.category_id, expense.description]
+        `INSERT INTO transactions (user_id, amount, category_id, description, date, is_income, expense_type, fixed_expense_id)
+         VALUES ($1, $2, $3, $4, CURRENT_DATE, false, 'fixed', $5)`,
+        [user.id, expense.typical_amount, expense.category_id, expense.description, expense.id]
       );
       total += parseFloat(expense.typical_amount);
       const emoji = expense.category_emoji || '💸';
