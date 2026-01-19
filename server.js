@@ -382,6 +382,9 @@ async function processUserMessage(phone, message) {
       case 'MARK_AS_FIXED':
         await handleMarkAsFixed(user);
         break;
+      case 'HELP':
+        await handleHelp(user);
+        break;
       default:
         await sendWhatsApp(phone,
           '🤔 Mmm, no te entendí. Prueba con:\n\n' +
@@ -645,7 +648,7 @@ REGLAS PARA EL CAMPO "description":
 FORMATO DE RESPUESTA:
 Responde SOLO con JSON válido (sin markdown, sin explicaciones):
 {
-  "type": "TRANSACTION|QUERY|BUDGET|BUDGET_STATUS|FINANCIAL_ADVICE|FIXED_EXPENSES_LIST|EDIT_FIXED_EXPENSE|DELETE_FIXED_EXPENSE|PAUSE_FIXED_EXPENSE|ACTIVATE_FIXED_EXPENSE|SET_REMINDER_DAY|MARK_AS_FIXED|OTHER",
+  "type": "TRANSACTION|QUERY|BUDGET|BUDGET_STATUS|FINANCIAL_ADVICE|FIXED_EXPENSES_LIST|EDIT_FIXED_EXPENSE|DELETE_FIXED_EXPENSE|PAUSE_FIXED_EXPENSE|ACTIVATE_FIXED_EXPENSE|SET_REMINDER_DAY|MARK_AS_FIXED|HELP|OTHER",
   "data": {
     "amount": número_sin_símbolos,
     "category": "categoría",
@@ -691,7 +694,15 @@ EJEMPLOS DE QUERIES:
 - "¿puedo comprar un auto?" → {"type":"FINANCIAL_ADVICE","data":{"question":"¿puedo comprar un auto?"}}
 - "dame consejos financieros" → {"type":"FINANCIAL_ADVICE","data":{"question":"dame consejos financieros"}}
 - "¿cómo ahorro más?" → {"type":"FINANCIAL_ADVICE","data":{"question":"¿cómo ahorro más?"}}
-- "¿debería gastar en X?" → {"type":"FINANCIAL_ADVICE","data":{"question":"¿debería gastar en X?"}}`
+- "¿debería gastar en X?" → {"type":"FINANCIAL_ADVICE","data":{"question":"¿debería gastar en X?"}}
+
+EJEMPLOS DE AYUDA:
+- "/ayuda" → {"type":"HELP","data":{}}
+- "ayuda" → {"type":"HELP","data":{}}
+- "help" → {"type":"HELP","data":{}}
+- "como funciona" → {"type":"HELP","data":{}}
+- "que puedo hacer" → {"type":"HELP","data":{}}
+- "comandos" → {"type":"HELP","data":{}}`
     },
     {
       type: "text",
@@ -1734,6 +1745,83 @@ async function handleActivateFixedExpense(user, data) {
   );
 }
 
+// Handler: Mostrar ayuda completa
+async function handleHelp(user) {
+  const helpMessage = `📚 *GUÍA COMPLETA DE ORDENATE*
+
+━━━━━━━━━━━━━━━━━━━━━━
+
+💸 *REGISTRAR GASTOS*
+• "Gasté 15000 en Jumbo"
+• "5 lucas en Uber"
+• "Almuerzo 8000"
+• "30000 supermercado"
+
+💰 *REGISTRAR INGRESOS*
+• "Me pagaron 800000"
+• "Ingreso 50000 freelance"
+• "Recibí 100 lucas"
+
+━━━━━━━━━━━━━━━━━━━━━━
+
+📌 *GASTOS FIJOS (arriendo, luz, Netflix, etc)*
+• "Gasto fijo arriendo 450000"
+• "Fijo Netflix 6990"
+• "Mis fijos" → ver lista
+• "Editar fijo 1" → modificar
+• "Eliminar fijo 2" → borrar
+• "Pausar fijo 1" → sin recordatorio
+• "Activar fijo 2" → reactivar
+• "Hacer fijo" → marcar último gasto como fijo
+
+━━━━━━━━━━━━━━━━━━━━━━
+
+📊 *CONSULTAR GASTOS*
+• "¿Cuánto gasté hoy?"
+• "Gastos de ayer"
+• "¿Cuánto gasté esta semana?"
+• "Detalle del mes"
+• "Gastos de comida"
+• "Detalle transporte semana pasada"
+
+━━━━━━━━━━━━━━━━━━━━━━
+
+💰 *PRESUPUESTOS*
+• "Máximo 300000 en comida"
+• "Presupuesto 100000 transporte"
+• "¿Cómo van mis presupuestos?"
+
+━━━━━━━━━━━━━━━━━━━━━━
+
+🔄 *RECLASIFICAR*
+• "Reclasificar último gasto a transporte"
+• "Cambiar categoría a comida"
+
+━━━━━━━━━━━━━━━━━━━━━━
+
+📋 *VER CATEGORÍAS*
+• "Categorías"
+• "Qué categorías hay"
+
+━━━━━━━━━━━━━━━━━━━━━━
+
+💡 *CONSEJOS FINANCIEROS*
+• "¿Puedo comprar un auto de 5 palos?"
+• "¿Cómo ahorro más?"
+• "Dame consejos financieros"
+
+━━━━━━━━━━━━━━━━━━━━━━
+
+🔔 *RECORDATORIOS*
+Los gastos fijos te avisan cada mes para que no olvides registrarlos.
+
+━━━━━━━━━━━━━━━━━━━━━━
+
+💬 Escribe "/ayuda" en cualquier momento para ver este mensaje.`;
+
+  await sendWhatsApp(user.phone, helpMessage);
+}
+
 // Handler: Establecer día de recordatorio
 async function handleSetReminderDay(user, data) {
   const { day, fixedExpenseId } = data;
@@ -2056,7 +2144,9 @@ async function handleOnboarding(user, message) {
         `"¿Puedo comprar un auto de 5 palos?"\n` +
         `"¿Cómo ahorro más?"\n\n` +
         `💡 Tip: Marca gastos como FIJOS y te recordaré cada mes.\n\n` +
-        `¡Empieza registrando tu primer gasto! 🚀`
+        `¡Empieza registrando tu primer gasto! 🚀\n\n` +
+        `━━━━━━━━━━━━━\n` +
+        `📚 Escribe /ayuda en cualquier momento para ver todos los comandos.`
       );
       break;
   }
