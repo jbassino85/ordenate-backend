@@ -253,9 +253,19 @@ async function processUserMessage(phone, message) {
       const msgLower = message.toLowerCase().trim();
 
       // Verificar si quiere cancelar
-      if (['cancelar', 'saltar', 'skip', 'no', 'omitir'].includes(msgLower)) {
+      if (['cancelar', 'saltar', 'skip', 'omitir'].includes(msgLower)) {
         await clearPendingFixedExpense(user.id);
         await sendWhatsApp(user.phone, '👍 Ok, cancelado.');
+        return;
+      }
+
+      // Verificar si quiere quitar el recordatorio
+      if (msgLower.includes('sin recordatorio') || msgLower.includes('quitar recordatorio') ||
+          msgLower.includes('sin dia') || msgLower.includes('sin día') || msgLower.includes('quitar dia') ||
+          msgLower.includes('quitar día')) {
+        await updateFixedExpense(user.pending_fixed_expense_id, user.id, { reminder_day: null });
+        await clearPendingFixedExpense(user.id);
+        await sendWhatsApp(user.phone, '✅ Recordatorio eliminado. El gasto fijo se mantiene activo.');
         return;
       }
 
@@ -1629,9 +1639,10 @@ async function handleEditFixedExpense(user, data) {
   await sendWhatsApp(user.phone,
     `Editando: ${emoji} ${expense.description} $${parseFloat(expense.typical_amount).toLocaleString('es-CL')} (${dayText})\n\n` +
     `¿Qué quieres cambiar?\n` +
-    `- Monto: escribe el nuevo (ej: "500000")\n` +
-    `- Día: escribe "día X" (ej: "día 10")\n` +
-    `- Ambos: "500000 día 10"\n\n` +
+    `• Monto: escribe el nuevo (ej: "500000")\n` +
+    `• Día: escribe "día X" (ej: "día 10")\n` +
+    `• Ambos: "500000 día 10"\n` +
+    `• Quitar recordatorio: "sin recordatorio"\n\n` +
     `O escribe "cancelar" para salir.`
   );
 }
