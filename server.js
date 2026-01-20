@@ -3922,6 +3922,190 @@ app.get('/api/admin/dashboard', authenticateAdmin, async (req, res) => {
   }
 });
 
+// GET /api/admin/users - Lista de usuarios con filtros y paginación
+app.get('/api/admin/users', authenticateAdmin, async (req, res) => {
+  try {
+    const {
+      page = 1,
+      limit = 20,
+      plan,
+      search,
+      sortBy = 'created_at',
+      sortOrder = 'desc'
+    } = req.query;
+
+    const offset = (parseInt(page) - 1) * parseInt(limit);
+    const validSortFields = ['created_at', 'last_interaction', 'name', 'phone'];
+    const sortField = validSortFields.includes(sortBy) ? sortBy : 'created_at';
+    const order = sortOrder.toLowerCase() === 'asc' ? 'ASC' : 'DESC';
+
+    let whereConditions = [];
+    let params = [];
+    let paramIndex = 1;
+
+    // Filtro por plan
+    if (plan) {
+      whereConditions.push(`p.name = $${paramIndex}`);
+      params.push(plan);
+      paramIndex++;
+    }
+
+    // Búsqueda por teléfono o nombre
+    if (search) {
+      whereConditions.push(`(u.phone ILIKE $${paramIndex} OR u.name ILIKE $${paramIndex})`);
+      params.push(`%${search}%`);
+      paramIndex++;
+    }
+
+    const whereClause = whereConditions.length > 0
+      ? 'WHERE ' + whereConditions.join(' AND ')
+      : '';
+
+    // Query principal
+    const query = `
+      SELECT
+        u.id, u.phone, u.name, u.created_at, u.last_interaction,
+        u.onboarding_complete, u.monthly_income, u.savings_goal,
+        p.name as plan_name,
+        (SELECT COUNT(*) FROM transactions WHERE user_id = u.id) as transaction_count,
+        (SELECT COUNT(*) FROM fixed_expenses WHERE user_id = u.id AND is_active = true) as fixed_expense_count
+      FROM users u
+      LEFT JOIN user_plans p ON u.plan_id = p.id
+      ${whereClause}
+      ORDER BY u.${sortField} ${order}
+      LIMIT $${paramIndex} OFFSET $${paramIndex + 1}
+    `;
+
+    params.push(parseInt(limit), offset);
+
+    const result = await pool.query(query, params);
+
+    // Contar total para paginación
+    const countQuery = `
+      SELECT COUNT(*) as total
+      FROM users u
+      LEFT JOIN user_plans p ON u.plan_id = p.id
+      ${whereClause}
+    `;
+    const countResult = await pool.query(countQuery, params.slice(0, -2));
+    const total = parseInt(countResult.rows[0].total);
+
+    res.json({
+      users: result.rows.map(u => ({
+        id: u.id,
+        phone: u.phone,
+        name: u.name,
+        plan: u.plan_name || 'free',
+        createdAt: u.created_at,
+        lastInteraction: u.last_interaction,
+        onboardingComplete: u.onboarding_complete,
+        monthlyIncome: u.monthly_income,
+        savingsGoal: u.savings_goal,
+        transactionCount: parseInt(u.transaction_count),
+        fixedExpenseCount: parseInt(u.fixed_expense_count)
+      })),
+      pagination: {
+        page: parseInt(page),
+        limit: parseInt(limit),
+        total,
+        totalPages: Math.ceil(total / parseInt(limit))
+      }
+    });
+  } catch (error) {
+    console.error('⚠️ ADMIN: Users list error:', error);
+    res.status(500).json({ error: 'Error fetching users' });
+  }
+});
+
+// GET /api/admin/users/:id - Detalle de usuario
+app.get('/api/admin/users/:id', authenticateAdmin, async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    // Info básica del usuario
+    const userResult = await pool.query(`
+      SELECT
+        u.*,
+        p.name as plan_name, p.price as plan_price
+      FROM users u
+      LEFT JOIN user_plans p ON u.plan_id = p.id
+      WHERE u.id = $1
+    `, [id]);
+
+    if (userResult.rows.length === 0) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+
+    const user = userResult.rows[0];
+
+    // Estadísticas de transacciones
+    const txStats = await pool.query(`
+      SELECT
+        COUNT(*) as total,
+        COALESCE(SUM(amount) FILTER (WHERE is_income = false), 0) as total_expenses,
+        COALESCE(SUM(amount) FILTER (WHERE is_income = true), 0) as total_income,
+        COUNT(*) FILTER (WHERE created_at >= date_trunc('month', CURRENT_DATE)) as this_month
+      FROM transactions
+      WHERE user_id = $1
+    `, [id]);
+
+    // Últimas transacciones
+    const recentTx = await pool.query(`
+      SELECT t.*, c.name as category_name, c.emoji as category_emoji
+      FROM transactions t
+      LEFT JOIN categories c ON t.category_id = c.id
+      WHERE t.user_id = $1
+      ORDER BY t.created_at DESC
+      LIMIT 10
+    `, [id]);
+
+    // Gastos fijos
+    const fixedExpenses = await pool.query(`
+      SELECT f.*, c.name as category_name, c.emoji as category_emoji
+      FROM fixed_expenses f
+      LEFT JOIN categories c ON f.category_id = c.id
+      WHERE f.user_id = $1
+      ORDER BY f.created_at DESC
+    `, [id]);
+
+    // Presupuestos
+    const budgets = await pool.query(`
+      SELECT b.*, c.name as category_name, c.emoji as category_emoji
+      FROM budgets b
+      LEFT JOIN categories c ON b.category_id = c.id
+      WHERE b.user_id = $1
+    `, [id]);
+
+    res.json({
+      user: {
+        id: user.id,
+        phone: user.phone,
+        name: user.name,
+        plan: user.plan_name || 'free',
+        planPrice: user.plan_price,
+        createdAt: user.created_at,
+        lastInteraction: user.last_interaction,
+        onboardingComplete: user.onboarding_complete,
+        onboardingStep: user.onboarding_step,
+        monthlyIncome: user.monthly_income,
+        savingsGoal: user.savings_goal
+      },
+      stats: {
+        totalTransactions: parseInt(txStats.rows[0].total),
+        totalExpenses: parseFloat(txStats.rows[0].total_expenses),
+        totalIncome: parseFloat(txStats.rows[0].total_income),
+        transactionsThisMonth: parseInt(txStats.rows[0].this_month)
+      },
+      recentTransactions: recentTx.rows,
+      fixedExpenses: fixedExpenses.rows,
+      budgets: budgets.rows
+    });
+  } catch (error) {
+    console.error('⚠️ ADMIN: User detail error:', error);
+    res.status(500).json({ error: 'Error fetching user details' });
+  }
+});
+
 // Función principal para enviar recordatorios de gastos fijos
 async function sendFixedExpenseReminders() {
   // Obtener fecha en zona horaria de Chile
