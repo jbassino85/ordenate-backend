@@ -1457,6 +1457,26 @@ async function clearPendingFixedExpense(userId) {
   );
 }
 
+// Guardar IDs de transacciones mostradas al usuario
+async function setLastShownTxIds(userId, txIds) {
+  await pool.query(
+    'UPDATE users SET last_shown_tx_ids = $1 WHERE id = $2',
+    [JSON.stringify(txIds), userId]
+  );
+}
+
+// Obtener IDs de transacciones mostradas
+async function getLastShownTxIds(userId) {
+  const result = await pool.query(
+    'SELECT last_shown_tx_ids FROM users WHERE id = $1',
+    [userId]
+  );
+  if (result.rows.length > 0 && result.rows[0].last_shown_tx_ids) {
+    return JSON.parse(result.rows[0].last_shown_tx_ids);
+  }
+  return null;
+}
+
 // Extraer día del mensaje (ej: "5", "día 15", "el 20")
 function extractReminderDay(message) {
   const cleaned = message.toLowerCase().trim();
@@ -2061,6 +2081,10 @@ async function handleListMyExpenses(user) {
     return;
   }
 
+  // Guardar IDs de transacciones mostradas para poder editar por índice
+  const txIds = result.rows.map(tx => tx.id);
+  await setLastShownTxIds(user.id, txIds);
+
   let reply = '📋 *Tus gastos de este mes:*\n\n';
 
   result.rows.forEach((tx, index) => {
@@ -2172,28 +2196,53 @@ async function handleEditExpense(user, data) {
     return;
   }
 
-  // Obtener los gastos del mes en el mismo orden que la lista
+  // Intentar obtener los IDs de la última lista mostrada
+  const lastShownIds = await getLastShownTxIds(user.id);
+
+  let txId;
+  if (lastShownIds && index <= lastShownIds.length) {
+    // Usar el ID guardado de la última lista mostrada
+    txId = lastShownIds[index - 1];
+  } else {
+    // Fallback: obtener los gastos del mes
+    const result = await pool.query(
+      `SELECT t.id FROM transactions t
+       WHERE t.user_id = $1
+         AND t.date >= date_trunc('month', CURRENT_DATE)
+       ORDER BY t.created_at DESC
+       LIMIT 20`,
+      [user.id]
+    );
+
+    if (index > result.rows.length) {
+      await sendWhatsApp(user.phone,
+        `❌ No existe el gasto #${index}.\n` +
+        `Escribe "mis gastos" para ver la lista actual.`
+      );
+      return;
+    }
+    txId = result.rows[index - 1].id;
+  }
+
+  // Obtener detalles de la transacción
   const result = await pool.query(
     `SELECT t.id, t.amount, t.description,
             c.name as category_name, c.emoji as category_emoji
      FROM transactions t
      LEFT JOIN categories c ON t.category_id = c.id
-     WHERE t.user_id = $1
-       AND t.date >= date_trunc('month', CURRENT_DATE)
-     ORDER BY t.created_at DESC
-     LIMIT 20`,
-    [user.id]
+     WHERE t.id = $1 AND t.user_id = $2`,
+    [txId, user.id]
   );
 
-  if (index > result.rows.length) {
+  if (result.rows.length === 0) {
     await sendWhatsApp(user.phone,
-      `❌ No existe el gasto #${index}.\n` +
-      `Tienes ${result.rows.length} gastos este mes. Escribe "mis gastos" para verlos.`
+      `❌ No encontré el gasto #${index}.\n` +
+      `Escribe "mis gastos" para ver la lista actualizada.`
     );
     return;
   }
 
-  const tx = result.rows[index - 1];
+  const tx = result.rows[0];
   const emoji = tx.category_emoji || '📦';
   const desc = tx.description || tx.category_name || 'Sin descripción';
 
@@ -2225,28 +2274,53 @@ async function handleDeleteExpense(user, data) {
     return;
   }
 
-  // Obtener los gastos del mes en el mismo orden que la lista
+  // Intentar obtener los IDs de la última lista mostrada
+  const lastShownIds = await getLastShownTxIds(user.id);
+
+  let txId;
+  if (lastShownIds && index <= lastShownIds.length) {
+    // Usar el ID guardado de la última lista mostrada
+    txId = lastShownIds[index - 1];
+  } else {
+    // Fallback: obtener los gastos del mes
+    const result = await pool.query(
+      `SELECT t.id FROM transactions t
+       WHERE t.user_id = $1
+         AND t.date >= date_trunc('month', CURRENT_DATE)
+       ORDER BY t.created_at DESC
+       LIMIT 20`,
+      [user.id]
+    );
+
+    if (index > result.rows.length) {
+      await sendWhatsApp(user.phone,
+        `❌ No existe el gasto #${index}.\n` +
+        `Escribe "mis gastos" para ver la lista actual.`
+      );
+      return;
+    }
+    txId = result.rows[index - 1].id;
+  }
+
+  // Obtener detalles de la transacción antes de eliminar
   const result = await pool.query(
     `SELECT t.id, t.amount, t.description,
             c.name as category_name, c.emoji as category_emoji
      FROM transactions t
      LEFT JOIN categories c ON t.category_id = c.id
-     WHERE t.user_id = $1
-       AND t.date >= date_trunc('month', CURRENT_DATE)
-     ORDER BY t.created_at DESC
-     LIMIT 20`,
-    [user.id]
+     WHERE t.id = $1 AND t.user_id = $2`,
+    [txId, user.id]
   );
 
-  if (index > result.rows.length) {
+  if (result.rows.length === 0) {
     await sendWhatsApp(user.phone,
-      `❌ No existe el gasto #${index}.\n` +
-      `Tienes ${result.rows.length} gastos este mes. Escribe "mis gastos" para verlos.`
+      `❌ No encontré el gasto #${index}.\n` +
+      `Escribe "mis gastos" para ver la lista actualizada.`
     );
     return;
   }
 
-  const tx = result.rows[index - 1];
+  const tx = result.rows[0];
   const emoji = tx.category_emoji || '📦';
   const desc = tx.description || tx.category_name || 'Sin descripción';
 
@@ -3043,34 +3117,39 @@ async function handleQuery(user, data) {
   // Si pide detalle, mostrar transacciones individuales
   if (detail) {
     let query = `
-      SELECT c.name as category, c.emoji, t.description, t.amount, t.date, t.is_income
+      SELECT t.id, c.name as category, c.emoji, t.description, t.amount, t.date, t.is_income
       FROM transactions t
       JOIN categories c ON t.category_id = c.id
       WHERE t.user_id = $1 AND ${dateFilter}
     `;
-    
+
     const params = [user.id];
-    
+
     if (categoryId) {
       query += ` AND t.category_id = $2`;
       params.push(categoryId);
     }
-    
+
     query += ' ORDER BY c.name, t.date DESC';
-    
+
     const result = await pool.query(query, params);
-    
+
     if (result.rows.length === 0) {
       const catText = category ? ` en ${category}` : '';
       await sendWhatsApp(user.phone, `No tienes gastos registrados${catText} ${periodText} 📊`);
       return;
     }
-    
-    // Agrupar por categoría
+
+    // Guardar IDs de transacciones mostradas para poder editar por índice
+    const txIds = result.rows.map(tx => tx.id);
+    await setLastShownTxIds(user.id, txIds);
+
+    // Agrupar por categoría manteniendo índice global
     const byCategory = {};
     let totalExpenses = 0;
     let totalIncome = 0;
-    
+    let globalIndex = 0;
+
     result.rows.forEach(row => {
       if (!byCategory[row.category]) {
         byCategory[row.category] = {
@@ -3078,43 +3157,47 @@ async function handleQuery(user, data) {
           transactions: []
         };
       }
+      globalIndex++;
+      row.displayIndex = globalIndex;
       byCategory[row.category].transactions.push(row);
-      
+
       if (row.is_income) {
         totalIncome += parseFloat(row.amount);
       } else {
         totalExpenses += parseFloat(row.amount);
       }
     });
-    
+
     const catText = category ? ` - ${category.charAt(0).toUpperCase() + category.slice(1)}` : '';
     const nameGreeting = user.name ? `${user.name}, aquí está tu ` : '';
     let reply = `📊 ${nameGreeting}Detalle ${periodText}${catText}:\n\n`;
-    
+
     // Mostrar cada categoría con sus transacciones
     Object.keys(byCategory).sort().forEach(cat => {
       const { emoji, transactions } = byCategory[cat];
       const catTotal = transactions.reduce((sum, t) => sum + parseFloat(t.amount), 0);
-      
+
       reply += `${emoji} ${cat.charAt(0).toUpperCase() + cat.slice(1)}:\n`;
-      
+
       transactions.forEach(transaction => {
         const date = new Date(transaction.date);
         const dateStr = `${String(date.getDate()).padStart(2, '0')}/${String(date.getMonth() + 1).padStart(2, '0')}`;
-        reply += `  • ${transaction.description || 'Sin descripción'}: $${Number(transaction.amount).toLocaleString('es-CL')} (${dateStr})\n`;
+        reply += `  ${transaction.displayIndex}. ${transaction.description || 'Sin descripción'}: $${Number(transaction.amount).toLocaleString('es-CL')} (${dateStr})\n`;
       });
-      
-      reply += `  Total: $${catTotal.toLocaleString('es-CL')}\n\n`;
+
+      reply += `  Subtotal: $${catTotal.toLocaleString('es-CL')}\n\n`;
     });
-    
+
     reply += `━━━━━━━━━━━━━\n`;
     reply += `Total gastado: $${totalExpenses.toLocaleString('es-CL')}`;
-    
+
     if (totalIncome > 0) {
       reply += `\nTotal ingresos: $${totalIncome.toLocaleString('es-CL')}`;
       reply += `\nBalance: $${(totalIncome - totalExpenses).toLocaleString('es-CL')}`;
     }
-    
+
+    reply += `\n\n📝 "editar gasto X" | "borrar gasto X"`;
+
     await sendWhatsApp(user.phone, reply);
     return;
   }
