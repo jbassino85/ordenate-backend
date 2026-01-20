@@ -2632,7 +2632,12 @@ async function handleOnboarding(user, message) {
         `💡 PEDIRME CONSEJOS:\n` +
         `"¿Puedo comprar un auto de 5 palos?"\n` +
         `"¿Cómo ahorro más?"\n\n` +
-        `💡 Tip: Marca gastos como FIJOS y te recordaré cada mes.\n\n` +
+        `✏️ EDITAR GASTOS:\n` +
+        `"Mis gastos" para ver lista\n` +
+        `"Editar último gasto" si te equivocaste\n\n` +
+        `💡 Tips:\n` +
+        `• Marca gastos como FIJOS y te recordaré cada mes\n` +
+        `• Puedes registrar varios: "5000 uber y 12000 almuerzo"\n\n` +
         `¡Empieza registrando tu primer gasto! 🚀\n\n` +
         `━━━━━━━━━━━━━\n` +
         `📚 Escribe /ayuda en cualquier momento para ver todos los comandos.`
