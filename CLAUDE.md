@@ -1,16 +1,32 @@
 # Ordenate Backend - Claude Notes
 
-## SQL Syntax for DBeaver
+## SQL Syntax for DBeaver (PostgreSQL)
 
 When providing SQL for the user to run in DBeaver, use this syntax:
 
 ```sql
--- Correct syntax (with public schema, no IF NOT EXISTS for indexes)
-CREATE INDEX idx_name ON public.table_name (column_name);
+-- CREATE TABLE syntax
+CREATE TABLE public.table_name (
+	column1 varchar NULL,
+	column2 int NOT NULL,
+	id serial NOT NULL,
+	CONSTRAINT table_name_pk PRIMARY KEY (id)
+);
 
--- NOT this:
-CREATE INDEX IF NOT EXISTS idx_name ON table_name (column_name);
+-- Foreign keys as separate constraint
+ALTER TABLE public.table_name
+ADD CONSTRAINT table_name_fk FOREIGN KEY (column_id) REFERENCES public.other_table(id);
+
+-- Indexes (no IF NOT EXISTS)
+CREATE INDEX idx_name ON public.table_name (column_name);
 ```
+
+**Rules:**
+- Always use `public.` schema prefix
+- PRIMARY KEY as CONSTRAINT at the end, named `tablename_pk`
+- Foreign keys as CONSTRAINT, named `tablename_fk` or `tablename_column_fk`
+- No `IF NOT EXISTS` for indexes
+- Use lowercase `NULL` / `NOT NULL` after data type
 
 ## Project Context
 
