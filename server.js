@@ -248,6 +248,39 @@ async function processUserMessage(phone, message) {
       // Si no se procesó, continuar con clasificación normal
     }
 
+    // 3.5.5 Verificar si estamos esperando confirmación de eliminación de cuenta
+    if (user.pending_fixed_expense_id === -998) {
+      const msgLower = message.toLowerCase().trim();
+
+      if (msgLower === 'confirmar eliminar' || msgLower === 'confirmar' || msgLower === 'si eliminar') {
+        // Guardar el teléfono antes de eliminar
+        const userPhone = user.phone;
+
+        // Eliminar la cuenta
+        await deleteUser(userPhone);
+
+        await sendWhatsApp(userPhone,
+          '✅ Tu cuenta ha sido eliminada.\n\n' +
+          'Todos tus datos han sido borrados permanentemente.\n\n' +
+          '¡Gracias por usar Ordenate! Si cambias de opinión, escríbenos de nuevo para crear una cuenta nueva. 👋'
+        );
+        return;
+      }
+
+      if (msgLower === 'cancelar' || msgLower === 'no') {
+        await clearPendingFixedExpense(user.id);
+        await sendWhatsApp(user.phone, '👍 Operación cancelada. Tu cuenta sigue activa.');
+        return;
+      }
+
+      // Si no es confirmación ni cancelación, recordar las opciones
+      await sendWhatsApp(user.phone,
+        '⚠️ Para eliminar tu cuenta escribe exactamente *"CONFIRMAR ELIMINAR"*\n' +
+        'o escribe *"cancelar"* para mantener tu cuenta.'
+      );
+      return;
+    }
+
     // 3.6 Verificar si estamos esperando edición o día de recordatorio para gasto fijo
     if (user.pending_fixed_expense_id && user.pending_fixed_expense_id > 0) {
       const msgLower = message.toLowerCase().trim();
@@ -350,6 +383,9 @@ async function processUserMessage(phone, message) {
       case 'TRANSACTION':
         await handleTransaction(user, intent.data);
         break;
+      case 'MULTIPLE_TRANSACTIONS':
+        await handleMultipleTransactions(user, intent.data);
+        break;
       case 'QUERY':
         await handleQuery(user, intent.data);
         break;
@@ -394,6 +430,9 @@ async function processUserMessage(phone, message) {
         break;
       case 'HELP':
         await handleHelp(user);
+        break;
+      case 'DELETE_ACCOUNT':
+        await handleDeleteAccount(user);
         break;
       default:
         await sendWhatsApp(phone,
@@ -454,6 +493,13 @@ CATEGORÍAS POSIBLES:
 
    IMPORTANTE: Si no hay palabra clave clara, asumir que es GASTO (default).
    IMPORTANTE: Para gastos fijos, incluir is_fixed: true y ask_reminder_day: true en data.
+
+   MÚLTIPLES GASTOS EN UNA LÍNEA:
+   Si el mensaje contiene "y" o "," separando múltiples gastos, usar tipo MULTIPLE_TRANSACTIONS.
+   Ejemplos:
+   - "5000 en uber y 15000 en mcdonalds" → MULTIPLE_TRANSACTIONS con 2 transacciones
+   - "gasté 3000 en café, 12000 almuerzo y 5000 uber" → MULTIPLE_TRANSACTIONS con 3 transacciones
+   - "pagué 50000 arriendo y 20000 luz" → MULTIPLE_TRANSACTIONS con 2 transacciones
    
 2. QUERY: Consultar información
    Ejemplos: "¿cuánto gasté esta semana?", "mostrar mis gastos"
@@ -658,7 +704,7 @@ REGLAS PARA EL CAMPO "description":
 FORMATO DE RESPUESTA:
 Responde SOLO con JSON válido (sin markdown, sin explicaciones):
 {
-  "type": "TRANSACTION|QUERY|BUDGET|BUDGET_STATUS|FINANCIAL_ADVICE|FIXED_EXPENSES_LIST|EDIT_FIXED_EXPENSE|DELETE_FIXED_EXPENSE|PAUSE_FIXED_EXPENSE|ACTIVATE_FIXED_EXPENSE|SET_REMINDER_DAY|MARK_AS_FIXED|HELP|OTHER",
+  "type": "TRANSACTION|MULTIPLE_TRANSACTIONS|QUERY|BUDGET|BUDGET_STATUS|FINANCIAL_ADVICE|FIXED_EXPENSES_LIST|EDIT_FIXED_EXPENSE|DELETE_FIXED_EXPENSE|PAUSE_FIXED_EXPENSE|ACTIVATE_FIXED_EXPENSE|SET_REMINDER_DAY|MARK_AS_FIXED|HELP|DELETE_ACCOUNT|OTHER",
   "data": {
     "amount": número_sin_símbolos,
     "category": "categoría",
@@ -670,9 +716,15 @@ Responde SOLO con JSON válido (sin markdown, sin explicaciones):
     "detail": true/false (solo para QUERY: true si pide desglose, false para resumen),
     "question": "pregunta_original" (solo para FINANCIAL_ADVICE),
     "index": número (para editar/eliminar/pausar/activar fijo),
-    "day": número (para SET_REMINDER_DAY)
+    "day": número (para SET_REMINDER_DAY),
+    "transactions": [ ... ] (solo para MULTIPLE_TRANSACTIONS - array de objetos con amount, category, description, is_income)
   }
 }
+
+EJEMPLOS DE MÚLTIPLES TRANSACCIONES:
+- "5000 en uber y 15000 en mcdonalds" → {"type":"MULTIPLE_TRANSACTIONS","data":{"transactions":[{"amount":5000,"category":"transporte","description":"Uber","is_income":false},{"amount":15000,"category":"comida","description":"McDonalds","is_income":false}]}}
+- "gasté 3000 café, 12000 almuerzo" → {"type":"MULTIPLE_TRANSACTIONS","data":{"transactions":[{"amount":3000,"category":"comida","description":"Café","is_income":false},{"amount":12000,"category":"comida","description":"Almuerzo","is_income":false}]}}
+- "pagué 50000 arriendo y 20000 luz" → {"type":"MULTIPLE_TRANSACTIONS","data":{"transactions":[{"amount":50000,"category":"hogar","description":"Arriendo","is_income":false},{"amount":20000,"category":"servicios","description":"Luz","is_income":false}]}}
 
 EJEMPLOS DE GASTOS FIJOS:
 - "gasto fijo arriendo 450000" → {"type":"TRANSACTION","data":{"amount":450000,"category":"hogar","description":"Arriendo","is_income":false,"is_fixed":true,"ask_reminder_day":true}}
@@ -712,7 +764,15 @@ EJEMPLOS DE AYUDA:
 - "help" → {"type":"HELP","data":{}}
 - "como funciona" → {"type":"HELP","data":{}}
 - "que puedo hacer" → {"type":"HELP","data":{}}
-- "comandos" → {"type":"HELP","data":{}}`
+- "comandos" → {"type":"HELP","data":{}}
+
+EJEMPLOS DE ELIMINAR CUENTA:
+- "eliminar mi cuenta" → {"type":"DELETE_ACCOUNT","data":{}}
+- "borrar mi cuenta" → {"type":"DELETE_ACCOUNT","data":{}}
+- "quiero eliminar mi cuenta" → {"type":"DELETE_ACCOUNT","data":{}}
+- "eliminar cuenta" → {"type":"DELETE_ACCOUNT","data":{}}
+- "borrar cuenta" → {"type":"DELETE_ACCOUNT","data":{}}
+- "delete account" → {"type":"DELETE_ACCOUNT","data":{}}`
     },
     {
       type: "text",
@@ -866,23 +926,29 @@ async function resetUser(phone) {
   const result = await pool.query('SELECT id FROM users WHERE phone = $1', [phone]);
   if (result.rows.length > 0) {
     const userId = result.rows[0].id;
-    
+
+    // Primero limpiar referencia a fixed_expenses para evitar problemas de FK
+    await pool.query('UPDATE users SET pending_fixed_expense_id = NULL WHERE id = $1', [userId]);
+
     // Eliminar todas las transacciones
     await pool.query('DELETE FROM transactions WHERE user_id = $1', [userId]);
-    
+
+    // Eliminar gastos fijos
+    await pool.query('DELETE FROM fixed_expenses WHERE user_id = $1', [userId]);
+
     // Eliminar presupuestos
     await pool.query('DELETE FROM budgets WHERE user_id = $1', [userId]);
-    
+
     // Eliminar alertas
     await pool.query('DELETE FROM financial_alerts WHERE user_id = $1', [userId]);
-    
+
     // Resetear campos de onboarding e income update
     await pool.query(
-      `UPDATE users 
+      `UPDATE users
        SET name = NULL,
-           monthly_income = NULL, 
-           savings_goal = NULL, 
-           onboarding_complete = false, 
+           monthly_income = NULL,
+           savings_goal = NULL,
+           onboarding_complete = false,
            onboarding_step = 'awaiting_name',
            last_income_update_prompt = NULL,
            income_update_declined = false
@@ -893,8 +959,22 @@ async function resetUser(phone) {
 }
 
 async function deleteUser(phone) {
-  // Las foreign keys con ON DELETE CASCADE se encargan del resto
-  await pool.query('DELETE FROM users WHERE phone = $1', [phone]);
+  const result = await pool.query('SELECT id FROM users WHERE phone = $1', [phone]);
+  if (result.rows.length > 0) {
+    const userId = result.rows[0].id;
+
+    // Limpiar referencia a fixed_expenses primero
+    await pool.query('UPDATE users SET pending_fixed_expense_id = NULL WHERE id = $1', [userId]);
+
+    // Eliminar datos relacionados explícitamente (por seguridad, aunque CASCADE debería funcionar)
+    await pool.query('DELETE FROM transactions WHERE user_id = $1', [userId]);
+    await pool.query('DELETE FROM fixed_expenses WHERE user_id = $1', [userId]);
+    await pool.query('DELETE FROM budgets WHERE user_id = $1', [userId]);
+    await pool.query('DELETE FROM financial_alerts WHERE user_id = $1', [userId]);
+
+    // Finalmente eliminar el usuario
+    await pool.query('DELETE FROM users WHERE id = $1', [userId]);
+  }
 }
 
 async function getSystemStats() {
@@ -1833,6 +1913,27 @@ Los gastos fijos te avisan cada mes para que no olvides registrarlos.
   await sendWhatsApp(user.phone, helpMessage);
 }
 
+// Handler: Eliminar cuenta (solicita confirmación)
+async function handleDeleteAccount(user) {
+  // Marcar que estamos esperando confirmación de eliminación (-998)
+  await pool.query(
+    'UPDATE users SET pending_fixed_expense_id = -998 WHERE id = $1',
+    [user.id]
+  );
+
+  await sendWhatsApp(user.phone,
+    '⚠️ *¿Estás seguro de eliminar tu cuenta?*\n\n' +
+    'Se borrarán permanentemente:\n' +
+    '• Todas tus transacciones\n' +
+    '• Tus gastos fijos\n' +
+    '• Tus presupuestos\n' +
+    '• Tu configuración\n\n' +
+    '❌ Esta acción NO se puede deshacer.\n\n' +
+    'Escribe *"CONFIRMAR ELIMINAR"* para proceder\n' +
+    'o *"cancelar"* para mantener tu cuenta.'
+  );
+}
+
 // Handler: Establecer día de recordatorio
 async function handleSetReminderDay(user, data) {
   const { day, fixedExpenseId } = data;
@@ -2494,6 +2595,71 @@ async function handleTransaction(user, data) {
       // No romper el flujo principal
     }
   }
+}
+
+// Handler: Múltiples transacciones en una línea
+async function handleMultipleTransactions(user, data) {
+  const { transactions } = data;
+
+  if (!transactions || !Array.isArray(transactions) || transactions.length === 0) {
+    await sendWhatsApp(user.phone, '🤔 No pude identificar las transacciones. Intenta de nuevo.');
+    return;
+  }
+
+  let totalAmount = 0;
+  let registeredList = [];
+
+  for (const tx of transactions) {
+    // Procesar cada transacción individualmente usando handleTransaction
+    // Pero sin enviar mensajes individuales
+    const { amount, category, description, is_income } = tx;
+
+    if (!amount || amount <= 0) continue;
+
+    // Buscar categoría
+    const categoryResult = await pool.query(
+      'SELECT id, name, emoji FROM categories WHERE LOWER(name) = LOWER($1)',
+      [category || 'otros']
+    );
+
+    let categoryId, categoryName, categoryEmoji;
+    if (categoryResult.rows.length === 0) {
+      const otrosResult = await pool.query(
+        "SELECT id, name, emoji FROM categories WHERE name = 'otros'"
+      );
+      categoryId = otrosResult.rows[0]?.id;
+      categoryName = 'Otros';
+      categoryEmoji = '📦';
+    } else {
+      categoryId = categoryResult.rows[0].id;
+      categoryName = categoryResult.rows[0].name;
+      categoryEmoji = categoryResult.rows[0].emoji || '📦';
+    }
+
+    // Insertar transacción
+    await pool.query(
+      `INSERT INTO transactions (user_id, amount, category_id, description, date, is_income, expense_type)
+       VALUES ($1, $2, $3, $4, CURRENT_DATE, $5, 'variable')`,
+      [user.id, amount, categoryId, description || '', is_income || false]
+    );
+
+    totalAmount += amount;
+    const displayName = description || categoryName;
+    registeredList.push(`• ${categoryEmoji} ${displayName}: $${Number(amount).toLocaleString('es-CL')}`);
+  }
+
+  if (registeredList.length === 0) {
+    await sendWhatsApp(user.phone, '🤔 No pude registrar ninguna transacción. Revisa los montos.');
+    return;
+  }
+
+  const tipo = transactions.some(t => t.is_income) ? 'transacciones' : 'gastos';
+
+  await sendWhatsApp(user.phone,
+    `✅ Registré ${registeredList.length} ${tipo}:\n\n` +
+    `${registeredList.join('\n')}\n\n` +
+    `💰 Total: $${totalAmount.toLocaleString('es-CL')}`
+  );
 }
 
 async function handleQuery(user, data) {
