@@ -7,6 +7,7 @@ const twilio = require('twilio');
 const rateLimit = require('express-rate-limit');
 const helmet = require('helmet');
 const bcrypt = require('bcrypt');
+const axios = require('axios');
 
 const app = express();
 
@@ -4103,6 +4104,197 @@ app.get('/api/admin/users/:id', authenticateAdmin, async (req, res) => {
   } catch (error) {
     console.error('⚠️ ADMIN: User detail error:', error);
     res.status(500).json({ error: 'Error fetching user details' });
+  }
+});
+
+// ============================================
+// ADMIN COSTS ENDPOINTS
+// ============================================
+
+// GET /api/admin/costs/anthropic - Uso de Claude API
+app.get('/api/admin/costs/anthropic', authenticateAdmin, async (req, res) => {
+  try {
+    const { startDate, endDate } = req.query;
+
+    // Defaults: último mes
+    const now = new Date();
+    const defaultStart = new Date(now.getFullYear(), now.getMonth(), 1);
+    const defaultEnd = new Date(now.getFullYear(), now.getMonth() + 1, 0);
+
+    const start = startDate ? new Date(startDate) : defaultStart;
+    const end = endDate ? new Date(endDate) : defaultEnd;
+
+    const apiKey = process.env.ANTHROPIC_ADMIN_API_KEY;
+    if (!apiKey) {
+      return res.status(500).json({ error: 'ANTHROPIC_ADMIN_API_KEY not configured' });
+    }
+
+    const url = new URL('https://api.anthropic.com/v1/organizations/usage_report/messages');
+    url.searchParams.append('starting_at', start.toISOString());
+    url.searchParams.append('ending_at', end.toISOString());
+    url.searchParams.append('bucket_width', '1d');
+    url.searchParams.append('group_by[]', 'model');
+
+    const response = await axios.get(url.toString(), {
+      headers: {
+        'anthropic-version': '2023-06-01',
+        'x-api-key': apiKey
+      }
+    });
+
+    res.json({
+      period: { start: start.toISOString(), end: end.toISOString() },
+      data: response.data
+    });
+  } catch (error) {
+    console.error('⚠️ ADMIN: Anthropic costs error:', error.response?.data || error.message);
+    res.status(500).json({ error: 'Error fetching Anthropic costs', details: error.response?.data });
+  }
+});
+
+// GET /api/admin/costs/twilio - Uso de Twilio
+app.get('/api/admin/costs/twilio', authenticateAdmin, async (req, res) => {
+  try {
+    const { startDate, endDate } = req.query;
+
+    const accountSid = process.env.TWILIO_ACCOUNT_SID;
+    const authToken = process.env.TWILIO_AUTH_TOKEN;
+
+    if (!accountSid || !authToken) {
+      return res.status(500).json({ error: 'Twilio credentials not configured' });
+    }
+
+    // Defaults: último mes
+    const now = new Date();
+    const defaultStart = new Date(now.getFullYear(), now.getMonth(), 1);
+    const defaultEnd = new Date(now.getFullYear(), now.getMonth() + 1, 0);
+
+    const start = startDate || defaultStart.toISOString().split('T')[0];
+    const end = endDate || defaultEnd.toISOString().split('T')[0];
+
+    const url = `https://api.twilio.com/2010-04-01/Accounts/${accountSid}/Usage/Records.json?StartDate=${start}&EndDate=${end}&Category=sms`;
+
+    const response = await axios.get(url, {
+      auth: {
+        username: accountSid,
+        password: authToken
+      }
+    });
+
+    // Filtrar solo WhatsApp/SMS relevantes
+    const records = response.data.usage_records || [];
+    const summary = {
+      totalCost: 0,
+      totalMessages: 0,
+      byCategory: {}
+    };
+
+    records.forEach(record => {
+      const cost = parseFloat(record.price || 0);
+      const count = parseInt(record.count || 0);
+      summary.totalCost += cost;
+      summary.totalMessages += count;
+
+      if (!summary.byCategory[record.category]) {
+        summary.byCategory[record.category] = { cost: 0, count: 0 };
+      }
+      summary.byCategory[record.category].cost += cost;
+      summary.byCategory[record.category].count += count;
+    });
+
+    res.json({
+      period: { start, end },
+      summary,
+      records
+    });
+  } catch (error) {
+    console.error('⚠️ ADMIN: Twilio costs error:', error.response?.data || error.message);
+    res.status(500).json({ error: 'Error fetching Twilio costs', details: error.response?.data });
+  }
+});
+
+// GET /api/admin/costs/railway - Uso de Railway
+app.get('/api/admin/costs/railway', authenticateAdmin, async (req, res) => {
+  try {
+    const railwayToken = process.env.RAILWAY_API_TOKEN;
+    const projectId = process.env.RAILWAY_PROJECT_ID;
+
+    if (!railwayToken || !projectId) {
+      return res.status(500).json({ error: 'Railway credentials not configured' });
+    }
+
+    // Query para obtener info del proyecto y uso estimado
+    const query = `
+      query {
+        project(id: "${projectId}") {
+          name
+          createdAt
+          services {
+            edges {
+              node {
+                name
+                id
+              }
+            }
+          }
+          environments {
+            edges {
+              node {
+                name
+                id
+              }
+            }
+          }
+        }
+      }
+    `;
+
+    const response = await axios.post('https://backboard.railway.com/graphql/v2',
+      { query },
+      {
+        headers: {
+          'Authorization': `Bearer ${railwayToken}`,
+          'Content-Type': 'application/json'
+        }
+      }
+    );
+
+    res.json({
+      project: response.data.data?.project,
+      note: 'Para costos detallados, revisar Railway Dashboard directamente'
+    });
+  } catch (error) {
+    console.error('⚠️ ADMIN: Railway costs error:', error.response?.data || error.message);
+    res.status(500).json({ error: 'Error fetching Railway data', details: error.response?.data });
+  }
+});
+
+// GET /api/admin/costs/summary - Resumen de todos los costos
+app.get('/api/admin/costs/summary', authenticateAdmin, async (req, res) => {
+  try {
+    const { startDate, endDate } = req.query;
+
+    // Hacer las 3 llamadas en paralelo
+    const [anthropic, twilio, railway] = await Promise.allSettled([
+      axios.get(`http://localhost:${process.env.PORT || 3000}/api/admin/costs/anthropic?startDate=${startDate || ''}&endDate=${endDate || ''}`, {
+        headers: { 'Authorization': req.headers.authorization }
+      }),
+      axios.get(`http://localhost:${process.env.PORT || 3000}/api/admin/costs/twilio?startDate=${startDate || ''}&endDate=${endDate || ''}`, {
+        headers: { 'Authorization': req.headers.authorization }
+      }),
+      axios.get(`http://localhost:${process.env.PORT || 3000}/api/admin/costs/railway`, {
+        headers: { 'Authorization': req.headers.authorization }
+      })
+    ]);
+
+    res.json({
+      anthropic: anthropic.status === 'fulfilled' ? anthropic.value.data : { error: anthropic.reason?.message },
+      twilio: twilio.status === 'fulfilled' ? twilio.value.data : { error: twilio.reason?.message },
+      railway: railway.status === 'fulfilled' ? railway.value.data : { error: railway.reason?.message }
+    });
+  } catch (error) {
+    console.error('⚠️ ADMIN: Costs summary error:', error);
+    res.status(500).json({ error: 'Error fetching costs summary' });
   }
 });
 
