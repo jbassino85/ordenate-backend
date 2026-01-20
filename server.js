@@ -3851,11 +3851,30 @@ async function handleFixedExpenseReminderResponse(user, message) {
       return true;
     }
 
-    // Registrar todas las transacciones
+    // Registrar transacciones (evitando duplicados del mes actual)
     let total = 0;
     let registeredList = [];
+    let skippedList = [];
 
     for (const expense of fixedExpenses) {
+      // Verificar si ya existe una transacción de este gasto fijo en el mes actual
+      const existingCheck = await pool.query(
+        `SELECT id FROM transactions
+         WHERE user_id = $1
+           AND fixed_expense_id = $2
+           AND date >= date_trunc('month', CURRENT_DATE)
+         LIMIT 1`,
+        [user.id, expense.id]
+      );
+
+      if (existingCheck.rows.length > 0) {
+        // Ya existe, saltar
+        const emoji = expense.category_emoji || '💸';
+        skippedList.push(`• ${emoji} ${expense.description} (ya registrado)`);
+        continue;
+      }
+
+      // No existe, registrar
       await pool.query(
         `INSERT INTO transactions (user_id, amount, category_id, description, date, is_income, expense_type, fixed_expense_id)
          VALUES ($1, $2, $3, $4, CURRENT_DATE, false, 'fixed', $5)`,
@@ -3867,12 +3886,21 @@ async function handleFixedExpenseReminderResponse(user, message) {
     }
 
     const currentMonth = new Date().toLocaleString('es-CL', { month: 'long' });
-
     await clearPendingFixedExpense(user.id);
-    await sendWhatsApp(user.phone,
-      `✅ Registrados:\n${registeredList.join('\n')}\n\n` +
-      `Total: $${total.toLocaleString('es-CL')} agregado a tus gastos de ${currentMonth}.`
-    );
+
+    if (registeredList.length === 0 && skippedList.length > 0) {
+      await sendWhatsApp(user.phone,
+        `ℹ️ Todos tus gastos fijos ya estaban registrados este mes:\n${skippedList.join('\n')}`
+      );
+    } else if (registeredList.length > 0) {
+      let reply = `✅ Registrados:\n${registeredList.join('\n')}\n\n` +
+        `Total: $${total.toLocaleString('es-CL')} agregado a tus gastos de ${currentMonth}.`;
+
+      if (skippedList.length > 0) {
+        reply += `\n\n⚠️ Omitidos (ya registrados):\n${skippedList.join('\n')}`;
+      }
+      await sendWhatsApp(user.phone, reply);
+    }
     return true;
   }
 
