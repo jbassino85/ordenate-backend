@@ -3817,6 +3817,111 @@ app.post('/api/admin/login', async (req, res) => {
   }
 });
 
+// GET /api/admin/dashboard - KPIs principales
+app.get('/api/admin/dashboard', authenticateAdmin, async (req, res) => {
+  try {
+    // Usuarios
+    const usersStats = await pool.query(`
+      SELECT
+        COUNT(*) as total,
+        COUNT(*) FILTER (WHERE DATE(created_at) = CURRENT_DATE) as today,
+        COUNT(*) FILTER (WHERE created_at >= date_trunc('week', CURRENT_DATE)) as this_week,
+        COUNT(*) FILTER (WHERE created_at >= date_trunc('month', CURRENT_DATE)) as this_month
+      FROM users
+    `);
+
+    // Usuarios por plan
+    const usersByPlan = await pool.query(`
+      SELECT p.name as plan_name, COUNT(u.id) as count
+      FROM users u
+      LEFT JOIN user_plans p ON u.plan_id = p.id
+      GROUP BY p.name
+    `);
+
+    // Actividad (DAU, WAU, MAU)
+    const activityStats = await pool.query(`
+      SELECT
+        COUNT(*) FILTER (WHERE DATE(last_interaction) = CURRENT_DATE) as dau,
+        COUNT(*) FILTER (WHERE last_interaction >= date_trunc('week', CURRENT_DATE)) as wau,
+        COUNT(*) FILTER (WHERE last_interaction >= date_trunc('month', CURRENT_DATE)) as mau
+      FROM users
+      WHERE last_interaction IS NOT NULL
+    `);
+
+    // Transacciones
+    const txStats = await pool.query(`
+      SELECT
+        COUNT(*) as total,
+        COUNT(*) FILTER (WHERE DATE(created_at) = CURRENT_DATE) as today,
+        COUNT(*) FILTER (WHERE created_at >= date_trunc('month', CURRENT_DATE)) as this_month,
+        COALESCE(SUM(amount) FILTER (WHERE is_income = false), 0) as total_expenses,
+        COALESCE(SUM(amount) FILTER (WHERE is_income = true), 0) as total_income
+      FROM transactions
+    `);
+
+    // Promedio de transacciones por usuario
+    const avgTxPerUser = await pool.query(`
+      SELECT ROUND(AVG(tx_count), 1) as avg_per_user
+      FROM (
+        SELECT user_id, COUNT(*) as tx_count
+        FROM transactions
+        GROUP BY user_id
+      ) sub
+    `);
+
+    // Gastos fijos
+    const fixedExpensesStats = await pool.query(`
+      SELECT
+        COUNT(DISTINCT user_id) as users_with_fixed,
+        COUNT(*) as total_fixed,
+        ROUND(AVG(typical_amount), 0) as avg_amount
+      FROM fixed_expenses
+      WHERE is_active = true
+    `);
+
+    // Formatear respuesta
+    const users = usersStats.rows[0];
+    const activity = activityStats.rows[0];
+    const tx = txStats.rows[0];
+
+    const byPlan = {};
+    usersByPlan.rows.forEach(row => {
+      byPlan[row.plan_name || 'sin_plan'] = parseInt(row.count);
+    });
+
+    res.json({
+      users: {
+        total: parseInt(users.total),
+        today: parseInt(users.today),
+        thisWeek: parseInt(users.this_week),
+        thisMonth: parseInt(users.this_month),
+        byPlan
+      },
+      activity: {
+        dau: parseInt(activity.dau),
+        wau: parseInt(activity.wau),
+        mau: parseInt(activity.mau)
+      },
+      transactions: {
+        total: parseInt(tx.total),
+        today: parseInt(tx.today),
+        thisMonth: parseInt(tx.this_month),
+        totalExpenses: parseFloat(tx.total_expenses),
+        totalIncome: parseFloat(tx.total_income),
+        avgPerUser: parseFloat(avgTxPerUser.rows[0]?.avg_per_user || 0)
+      },
+      fixedExpenses: {
+        usersWithFixed: parseInt(fixedExpensesStats.rows[0].users_with_fixed),
+        totalFixed: parseInt(fixedExpensesStats.rows[0].total_fixed),
+        avgAmount: parseFloat(fixedExpensesStats.rows[0].avg_amount || 0)
+      }
+    });
+  } catch (error) {
+    console.error('⚠️ ADMIN: Dashboard error:', error);
+    res.status(500).json({ error: 'Error fetching dashboard data' });
+  }
+});
+
 // Función principal para enviar recordatorios de gastos fijos
 async function sendFixedExpenseReminders() {
   // Obtener fecha en zona horaria de Chile
