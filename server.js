@@ -1987,86 +1987,33 @@ async function handleActivateFixedExpense(user, data) {
 
 // Handler: Mostrar ayuda completa
 async function handleHelp(user) {
-  const helpMessage = `📚 *GUÍA COMPLETA DE ORDENATE*
+  const helpMessage = `📚 *GUÍA DE ORDENATE*
 
-━━━━━━━━━━━━━━━━━━━━━━
+💸 *GASTOS/INGRESOS*
+"15000 almuerzo" | "5 lucas uber"
+"Me pagaron 800000"
 
-💸 *REGISTRAR GASTOS*
-• "Gasté 15000 en Jumbo"
-• "5 lucas en Uber"
-• "Almuerzo 8000"
-• "30000 supermercado"
+📌 *GASTOS FIJOS*
+"Gasto fijo arriendo 450000"
+"Mis fijos" | "Editar fijo 1" | "Pausar fijo 1"
 
-💰 *REGISTRAR INGRESOS*
-• "Me pagaron 800000"
-• "Ingreso 50000 freelance"
-• "Recibí 100 lucas"
-
-━━━━━━━━━━━━━━━━━━━━━━
-
-📌 *GASTOS FIJOS (arriendo, luz, Netflix, etc)*
-• "Gasto fijo arriendo 450000"
-• "Fijo Netflix 6990"
-• "Mis fijos" → ver lista
-• "Editar fijo 1" → modificar
-• "Eliminar fijo 2" → borrar
-• "Pausar fijo 1" → sin recordatorio
-• "Activar fijo 2" → reactivar
-• "Hacer fijo" → marcar último gasto como fijo
-
-━━━━━━━━━━━━━━━━━━━━━━
-
-📊 *CONSULTAR GASTOS*
-• "¿Cuánto gasté hoy?"
-• "Gastos de ayer"
-• "¿Cuánto gasté esta semana?"
-• "Detalle del mes"
-• "Gastos de comida"
-• "Detalle transporte semana pasada"
-
-━━━━━━━━━━━━━━━━━━━━━━
+📊 *CONSULTAS*
+"¿Cuánto gasté hoy/semana/mes?"
+"Detalle comida" | "Gastos de ayer"
 
 💰 *PRESUPUESTOS*
-• "Máximo 300000 en comida"
-• "Presupuesto 100000 transporte"
-• "¿Cómo van mis presupuestos?"
+"Máximo 300000 en comida"
+"¿Cómo van mis presupuestos?"
 
-━━━━━━━━━━━━━━━━━━━━━━
+✏️ *EDITAR GASTOS*
+"Mis gastos" → ver lista
+"Editar último" | "Borrar gasto 3"
 
-🔄 *RECLASIFICAR*
-• "Reclasificar último gasto a transporte"
-• "Cambiar categoría a comida"
+🔄 "Reclasificar a transporte"
+📋 "Categorías"
+💡 "¿Cómo ahorro más?"
 
-━━━━━━━━━━━━━━━━━━━━━━
-
-✏️ *EDITAR/ELIMINAR GASTOS*
-• "Mis gastos" → ver lista del mes
-• "Editar último gasto" → modificar reciente
-• "Borrar último gasto" → eliminar reciente
-• "Editar gasto 3" → modificar por número
-• "Borrar gasto 5" → eliminar por número
-
-━━━━━━━━━━━━━━━━━━━━━━
-
-📋 *VER CATEGORÍAS*
-• "Categorías"
-• "Qué categorías hay"
-
-━━━━━━━━━━━━━━━━━━━━━━
-
-💡 *CONSEJOS FINANCIEROS*
-• "¿Puedo comprar un auto de 5 palos?"
-• "¿Cómo ahorro más?"
-• "Dame consejos financieros"
-
-━━━━━━━━━━━━━━━━━━━━━━
-
-🔔 *RECORDATORIOS*
-Los gastos fijos te avisan cada mes para que no olvides registrarlos.
-
-━━━━━━━━━━━━━━━━━━━━━━
-
-💬 Escribe "/ayuda" en cualquier momento para ver este mensaje.`;
+💡 Tips: Varios gastos → "5000 uber y 12000 almuerzo"`;
 
   await sendWhatsApp(user.phone, helpMessage);
 }
