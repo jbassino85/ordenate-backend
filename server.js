@@ -3772,6 +3772,51 @@ async function authenticateAdmin(req, res, next) {
   }
 }
 
+// ============================================
+// ADMIN API ENDPOINTS
+// ============================================
+
+// POST /api/admin/login - Verificar credenciales admin
+app.post('/api/admin/login', async (req, res) => {
+  const { username, password } = req.body;
+
+  if (!username || !password) {
+    return res.status(400).json({ error: 'Username and password required' });
+  }
+
+  const adminUser = process.env.ADMIN_USER;
+  const adminPasswordHash = process.env.ADMIN_PASSWORD_HASH;
+
+  if (!adminUser || !adminPasswordHash) {
+    console.error('⚠️ ADMIN: Missing env vars');
+    return res.status(500).json({ error: 'Admin not configured' });
+  }
+
+  if (username !== adminUser) {
+    return res.status(401).json({ error: 'Invalid credentials' });
+  }
+
+  try {
+    const passwordMatch = await bcrypt.compare(password, adminPasswordHash);
+    if (!passwordMatch) {
+      return res.status(401).json({ error: 'Invalid credentials' });
+    }
+
+    // Login exitoso - retornar token Base64 para usar en siguientes requests
+    const token = Buffer.from(`${username}:${password}`).toString('base64');
+
+    res.json({
+      success: true,
+      message: 'Login successful',
+      token: token,  // El frontend guarda esto para los siguientes requests
+      user: { username: adminUser }
+    });
+  } catch (error) {
+    console.error('⚠️ ADMIN: Login error:', error);
+    return res.status(500).json({ error: 'Authentication error' });
+  }
+});
+
 // Función principal para enviar recordatorios de gastos fijos
 async function sendFixedExpenseReminders() {
   // Obtener fecha en zona horaria de Chile
