@@ -281,6 +281,84 @@ async function processUserMessage(phone, message) {
       return;
     }
 
+    // 3.5.6 Verificar si estamos editando una transacción (< -2000)
+    if (user.pending_fixed_expense_id && user.pending_fixed_expense_id < -2000) {
+      const msgLower = message.toLowerCase().trim();
+      const transactionId = Math.abs(user.pending_fixed_expense_id + 2000);
+
+      // Cancelar edición
+      if (msgLower === 'cancelar') {
+        await clearPendingFixedExpense(user.id);
+        await sendWhatsApp(user.phone, '👍 Ok, edición cancelada.');
+        return;
+      }
+
+      // Eliminar la transacción
+      if (msgLower === 'eliminar' || msgLower === 'borrar') {
+        const txResult = await pool.query(
+          `SELECT t.amount, t.description, c.emoji as category_emoji, c.name as category_name
+           FROM transactions t
+           LEFT JOIN categories c ON t.category_id = c.id
+           WHERE t.id = $1 AND t.user_id = $2`,
+          [transactionId, user.id]
+        );
+
+        if (txResult.rows.length > 0) {
+          const tx = txResult.rows[0];
+          const emoji = tx.category_emoji || '📦';
+          const desc = tx.description || tx.category_name || 'Sin descripción';
+
+          await pool.query('DELETE FROM transactions WHERE id = $1 AND user_id = $2', [transactionId, user.id]);
+          await clearPendingFixedExpense(user.id);
+          await sendWhatsApp(user.phone,
+            `🗑️ Eliminado: ${emoji} ${desc} - $${parseFloat(tx.amount).toLocaleString('es-CL')}`
+          );
+        } else {
+          await clearPendingFixedExpense(user.id);
+          await sendWhatsApp(user.phone, '❌ No encontré la transacción.');
+        }
+        return;
+      }
+
+      // Cambiar descripción
+      if (msgLower.startsWith('desc:') || msgLower.startsWith('descripcion:') || msgLower.startsWith('descripción:')) {
+        const newDesc = message.substring(message.indexOf(':') + 1).trim();
+        if (newDesc) {
+          await pool.query(
+            'UPDATE transactions SET description = $1 WHERE id = $2 AND user_id = $3',
+            [newDesc, transactionId, user.id]
+          );
+          await clearPendingFixedExpense(user.id);
+          await sendWhatsApp(user.phone, `✅ Descripción actualizada a: "${newDesc}"`);
+        } else {
+          await sendWhatsApp(user.phone, '🤔 Escribe la nueva descripción después de "desc:"');
+        }
+        return;
+      }
+
+      // Intentar cambiar monto (si es un número)
+      const newAmount = extractAmount(message);
+      if (newAmount && newAmount > 0) {
+        await pool.query(
+          'UPDATE transactions SET amount = $1 WHERE id = $2 AND user_id = $3',
+          [newAmount, transactionId, user.id]
+        );
+        await clearPendingFixedExpense(user.id);
+        await sendWhatsApp(user.phone, `✅ Monto actualizado a: $${newAmount.toLocaleString('es-CL')}`);
+        return;
+      }
+
+      // Si no entendimos, mostrar opciones de nuevo
+      await sendWhatsApp(user.phone,
+        '🤔 No entendí. Opciones:\n' +
+        '• Nuevo monto (ej: "50000")\n' +
+        '• Nueva descripción (ej: "desc: Almuerzo")\n' +
+        '• "eliminar" para borrar\n' +
+        '• "cancelar" para salir'
+      );
+      return;
+    }
+
     // 3.6 Verificar si estamos esperando edición o día de recordatorio para gasto fijo
     if (user.pending_fixed_expense_id && user.pending_fixed_expense_id > 0) {
       const msgLower = message.toLowerCase().trim();
@@ -427,6 +505,21 @@ async function processUserMessage(phone, message) {
         break;
       case 'MARK_AS_FIXED':
         await handleMarkAsFixed(user);
+        break;
+      case 'LIST_MY_EXPENSES':
+        await handleListMyExpenses(user);
+        break;
+      case 'EDIT_LAST_EXPENSE':
+        await handleEditLastExpense(user);
+        break;
+      case 'DELETE_LAST_EXPENSE':
+        await handleDeleteLastExpense(user);
+        break;
+      case 'EDIT_EXPENSE':
+        await handleEditExpense(user, intent.data);
+        break;
+      case 'DELETE_EXPENSE':
+        await handleDeleteExpense(user, intent.data);
         break;
       case 'HELP':
         await handleHelp(user);
@@ -622,7 +715,49 @@ CATEGORÍAS POSIBLES:
     - "marcar como fijo"
     Debe retornar: {}
 
-16. OTHER: Otro tipo
+16. LIST_MY_EXPENSES: Ver lista de gastos recientes del mes
+    Palabras clave: "mis gastos", "ver gastos", "lista de gastos", "gastos del mes", "mostrar gastos"
+    Ejemplos:
+    - "mis gastos"
+    - "ver mis gastos del mes"
+    - "lista de gastos"
+    - "mostrar gastos"
+    Debe retornar: {}
+
+17. EDIT_LAST_EXPENSE: Editar el último gasto registrado
+    Palabras clave: "editar último", "cambiar último", "modificar último", "corregir último"
+    Ejemplos:
+    - "editar último gasto"
+    - "cambiar el último gasto"
+    - "modificar último"
+    - "corregir el monto del último gasto"
+    Debe retornar: {}
+
+18. DELETE_LAST_EXPENSE: Eliminar el último gasto registrado
+    Palabras clave: "borrar último", "eliminar último", "quitar último"
+    Ejemplos:
+    - "borrar último gasto"
+    - "eliminar el último"
+    - "quitar último gasto"
+    Debe retornar: {}
+
+19. EDIT_EXPENSE: Editar un gasto específico por número
+    Palabras clave: "editar gasto", "modificar gasto", "cambiar gasto" + número
+    Ejemplos:
+    - "editar gasto 3"
+    - "modificar gasto 5"
+    - "cambiar el gasto 2"
+    Debe retornar: { index: número_del_gasto }
+
+20. DELETE_EXPENSE: Eliminar un gasto específico por número
+    Palabras clave: "borrar gasto", "eliminar gasto", "quitar gasto" + número
+    Ejemplos:
+    - "borrar gasto 3"
+    - "eliminar gasto 5"
+    - "quitar el gasto 2"
+    Debe retornar: { index: número_del_gasto }
+
+21. OTHER: Otro tipo
 
 MODISMOS CHILENOS:
 - "lucas/luca/lukas" = miles de pesos (ej: "5 lucas" = 5000)
@@ -704,7 +839,7 @@ REGLAS PARA EL CAMPO "description":
 FORMATO DE RESPUESTA:
 Responde SOLO con JSON válido (sin markdown, sin explicaciones):
 {
-  "type": "TRANSACTION|MULTIPLE_TRANSACTIONS|QUERY|BUDGET|BUDGET_STATUS|FINANCIAL_ADVICE|FIXED_EXPENSES_LIST|EDIT_FIXED_EXPENSE|DELETE_FIXED_EXPENSE|PAUSE_FIXED_EXPENSE|ACTIVATE_FIXED_EXPENSE|SET_REMINDER_DAY|MARK_AS_FIXED|HELP|DELETE_ACCOUNT|OTHER",
+  "type": "TRANSACTION|MULTIPLE_TRANSACTIONS|QUERY|BUDGET|BUDGET_STATUS|FINANCIAL_ADVICE|FIXED_EXPENSES_LIST|EDIT_FIXED_EXPENSE|DELETE_FIXED_EXPENSE|PAUSE_FIXED_EXPENSE|ACTIVATE_FIXED_EXPENSE|SET_REMINDER_DAY|MARK_AS_FIXED|LIST_MY_EXPENSES|EDIT_LAST_EXPENSE|DELETE_LAST_EXPENSE|EDIT_EXPENSE|DELETE_EXPENSE|HELP|DELETE_ACCOUNT|OTHER",
   "data": {
     "amount": número_sin_símbolos,
     "category": "categoría",
@@ -737,6 +872,20 @@ EJEMPLOS DE GASTOS FIJOS:
 - "5" (respuesta a día) → {"type":"SET_REMINDER_DAY","data":{"day":5}}
 - "día 15" → {"type":"SET_REMINDER_DAY","data":{"day":15}}
 - "fijo" (marcar como fijo) → {"type":"MARK_AS_FIXED","data":{}}
+
+EJEMPLOS DE EDICIÓN DE GASTOS:
+- "mis gastos" → {"type":"LIST_MY_EXPENSES","data":{}}
+- "ver mis gastos" → {"type":"LIST_MY_EXPENSES","data":{}}
+- "lista de gastos" → {"type":"LIST_MY_EXPENSES","data":{}}
+- "editar último gasto" → {"type":"EDIT_LAST_EXPENSE","data":{}}
+- "cambiar el último" → {"type":"EDIT_LAST_EXPENSE","data":{}}
+- "modificar último gasto" → {"type":"EDIT_LAST_EXPENSE","data":{}}
+- "borrar último gasto" → {"type":"DELETE_LAST_EXPENSE","data":{}}
+- "eliminar el último" → {"type":"DELETE_LAST_EXPENSE","data":{}}
+- "editar gasto 3" → {"type":"EDIT_EXPENSE","data":{"index":3}}
+- "modificar gasto 5" → {"type":"EDIT_EXPENSE","data":{"index":5}}
+- "borrar gasto 2" → {"type":"DELETE_EXPENSE","data":{"index":2}}
+- "eliminar gasto 4" → {"type":"DELETE_EXPENSE","data":{"index":4}}
 
 EJEMPLOS DE QUERIES:
 - "¿cuánto gasté hoy?" → {"type":"QUERY","data":{"period":"today","detail":false}}
@@ -1890,6 +2039,15 @@ async function handleHelp(user) {
 
 ━━━━━━━━━━━━━━━━━━━━━━
 
+✏️ *EDITAR/ELIMINAR GASTOS*
+• "Mis gastos" → ver lista del mes
+• "Editar último gasto" → modificar reciente
+• "Borrar último gasto" → eliminar reciente
+• "Editar gasto 3" → modificar por número
+• "Borrar gasto 5" → eliminar por número
+
+━━━━━━━━━━━━━━━━━━━━━━
+
 📋 *VER CATEGORÍAS*
 • "Categorías"
 • "Qué categorías hay"
@@ -1931,6 +2089,225 @@ async function handleDeleteAccount(user) {
     '❌ Esta acción NO se puede deshacer.\n\n' +
     'Escribe *"CONFIRMAR ELIMINAR"* para proceder\n' +
     'o *"cancelar"* para mantener tu cuenta.'
+  );
+}
+
+// Handler: Listar gastos del mes
+async function handleListMyExpenses(user) {
+  const result = await pool.query(
+    `SELECT t.id, t.amount, t.description, t.date, t.is_income, t.expense_type,
+            c.name as category_name, c.emoji as category_emoji
+     FROM transactions t
+     LEFT JOIN categories c ON t.category_id = c.id
+     WHERE t.user_id = $1
+       AND t.date >= date_trunc('month', CURRENT_DATE)
+     ORDER BY t.created_at DESC
+     LIMIT 20`,
+    [user.id]
+  );
+
+  if (result.rows.length === 0) {
+    await sendWhatsApp(user.phone,
+      '📋 No tienes gastos registrados este mes.\n\n' +
+      'Registra uno diciendo por ejemplo: "Gasté 5000 en almuerzo"'
+    );
+    return;
+  }
+
+  let reply = '📋 *Tus gastos de este mes:*\n\n';
+
+  result.rows.forEach((tx, index) => {
+    const emoji = tx.category_emoji || '📦';
+    const tipo = tx.is_income ? '💰' : '💸';
+    const desc = tx.description || tx.category_name || 'Sin descripción';
+    const fecha = new Date(tx.date).toLocaleDateString('es-CL', { day: 'numeric', month: 'short' });
+    const fijo = tx.expense_type === 'fixed' ? ' 📌' : '';
+
+    reply += `${index + 1}. ${tipo} ${emoji} ${desc}: $${parseFloat(tx.amount).toLocaleString('es-CL')}${fijo}\n`;
+    reply += `   📅 ${fecha}\n\n`;
+  });
+
+  reply += '━━━━━━━━━━━━━\n';
+  reply += '📝 *Para modificar:*\n';
+  reply += '• "editar gasto 3"\n';
+  reply += '• "borrar gasto 5"';
+
+  await sendWhatsApp(user.phone, reply);
+}
+
+// Handler: Editar último gasto (ventana de 5 minutos)
+async function handleEditLastExpense(user) {
+  // Buscar el último gasto del usuario (últimos 5 minutos)
+  const result = await pool.query(
+    `SELECT t.id, t.amount, t.description, t.date, t.is_income,
+            c.name as category_name, c.emoji as category_emoji
+     FROM transactions t
+     LEFT JOIN categories c ON t.category_id = c.id
+     WHERE t.user_id = $1
+       AND t.created_at >= NOW() - INTERVAL '5 minutes'
+     ORDER BY t.created_at DESC
+     LIMIT 1`,
+    [user.id]
+  );
+
+  if (result.rows.length === 0) {
+    await sendWhatsApp(user.phone,
+      '🤔 No encontré gastos recientes (últimos 5 minutos).\n\n' +
+      'Para editar gastos más antiguos, escribe "mis gastos" y selecciona el número.'
+    );
+    return;
+  }
+
+  const tx = result.rows[0];
+  const emoji = tx.category_emoji || '📦';
+  const desc = tx.description || tx.category_name || 'Sin descripción';
+
+  // Guardar ID de transacción para edición (usamos -2000 - txId para diferenciarlo)
+  await pool.query(
+    'UPDATE users SET pending_fixed_expense_id = $1 WHERE id = $2',
+    [-2000 - tx.id, user.id]
+  );
+
+  await sendWhatsApp(user.phone,
+    `✏️ *Editando:* ${emoji} ${desc} - $${parseFloat(tx.amount).toLocaleString('es-CL')}\n\n` +
+    `¿Qué quieres hacer?\n` +
+    `• Cambiar monto: escribe el nuevo (ej: "50000")\n` +
+    `• Cambiar descripción: escribe "desc: nueva descripción"\n` +
+    `• Eliminar: escribe "eliminar"\n\n` +
+    `O escribe "cancelar" para salir.`
+  );
+}
+
+// Handler: Eliminar último gasto
+async function handleDeleteLastExpense(user) {
+  // Buscar el último gasto del usuario (últimos 5 minutos)
+  const result = await pool.query(
+    `SELECT t.id, t.amount, t.description,
+            c.name as category_name, c.emoji as category_emoji
+     FROM transactions t
+     LEFT JOIN categories c ON t.category_id = c.id
+     WHERE t.user_id = $1
+       AND t.created_at >= NOW() - INTERVAL '5 minutes'
+     ORDER BY t.created_at DESC
+     LIMIT 1`,
+    [user.id]
+  );
+
+  if (result.rows.length === 0) {
+    await sendWhatsApp(user.phone,
+      '🤔 No encontré gastos recientes (últimos 5 minutos).\n\n' +
+      'Para eliminar gastos más antiguos, escribe "mis gastos" y selecciona el número.'
+    );
+    return;
+  }
+
+  const tx = result.rows[0];
+  const emoji = tx.category_emoji || '📦';
+  const desc = tx.description || tx.category_name || 'Sin descripción';
+
+  // Eliminar la transacción
+  await pool.query('DELETE FROM transactions WHERE id = $1 AND user_id = $2', [tx.id, user.id]);
+
+  await sendWhatsApp(user.phone,
+    `🗑️ Eliminado: ${emoji} ${desc} - $${parseFloat(tx.amount).toLocaleString('es-CL')}`
+  );
+}
+
+// Handler: Editar gasto por índice (de la lista)
+async function handleEditExpense(user, data) {
+  const { index } = data;
+
+  if (!index || index < 1) {
+    await sendWhatsApp(user.phone,
+      '🤔 Indica el número del gasto a editar.\n' +
+      'Primero escribe "mis gastos" para ver la lista.'
+    );
+    return;
+  }
+
+  // Obtener los gastos del mes en el mismo orden que la lista
+  const result = await pool.query(
+    `SELECT t.id, t.amount, t.description,
+            c.name as category_name, c.emoji as category_emoji
+     FROM transactions t
+     LEFT JOIN categories c ON t.category_id = c.id
+     WHERE t.user_id = $1
+       AND t.date >= date_trunc('month', CURRENT_DATE)
+     ORDER BY t.created_at DESC
+     LIMIT 20`,
+    [user.id]
+  );
+
+  if (index > result.rows.length) {
+    await sendWhatsApp(user.phone,
+      `❌ No existe el gasto #${index}.\n` +
+      `Tienes ${result.rows.length} gastos este mes. Escribe "mis gastos" para verlos.`
+    );
+    return;
+  }
+
+  const tx = result.rows[index - 1];
+  const emoji = tx.category_emoji || '📦';
+  const desc = tx.description || tx.category_name || 'Sin descripción';
+
+  // Guardar ID de transacción para edición
+  await pool.query(
+    'UPDATE users SET pending_fixed_expense_id = $1 WHERE id = $2',
+    [-2000 - tx.id, user.id]
+  );
+
+  await sendWhatsApp(user.phone,
+    `✏️ *Editando gasto #${index}:* ${emoji} ${desc} - $${parseFloat(tx.amount).toLocaleString('es-CL')}\n\n` +
+    `¿Qué quieres hacer?\n` +
+    `• Cambiar monto: escribe el nuevo (ej: "50000")\n` +
+    `• Cambiar descripción: escribe "desc: nueva descripción"\n` +
+    `• Eliminar: escribe "eliminar"\n\n` +
+    `O escribe "cancelar" para salir.`
+  );
+}
+
+// Handler: Eliminar gasto por índice
+async function handleDeleteExpense(user, data) {
+  const { index } = data;
+
+  if (!index || index < 1) {
+    await sendWhatsApp(user.phone,
+      '🤔 Indica el número del gasto a eliminar.\n' +
+      'Primero escribe "mis gastos" para ver la lista.'
+    );
+    return;
+  }
+
+  // Obtener los gastos del mes en el mismo orden que la lista
+  const result = await pool.query(
+    `SELECT t.id, t.amount, t.description,
+            c.name as category_name, c.emoji as category_emoji
+     FROM transactions t
+     LEFT JOIN categories c ON t.category_id = c.id
+     WHERE t.user_id = $1
+       AND t.date >= date_trunc('month', CURRENT_DATE)
+     ORDER BY t.created_at DESC
+     LIMIT 20`,
+    [user.id]
+  );
+
+  if (index > result.rows.length) {
+    await sendWhatsApp(user.phone,
+      `❌ No existe el gasto #${index}.\n` +
+      `Tienes ${result.rows.length} gastos este mes. Escribe "mis gastos" para verlos.`
+    );
+    return;
+  }
+
+  const tx = result.rows[index - 1];
+  const emoji = tx.category_emoji || '📦';
+  const desc = tx.description || tx.category_name || 'Sin descripción';
+
+  // Eliminar la transacción
+  await pool.query('DELETE FROM transactions WHERE id = $1 AND user_id = $2', [tx.id, user.id]);
+
+  await sendWhatsApp(user.phone,
+    `🗑️ Eliminado gasto #${index}: ${emoji} ${desc} - $${parseFloat(tx.amount).toLocaleString('es-CL')}`
   );
 }
 
