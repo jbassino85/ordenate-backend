@@ -6,6 +6,7 @@ const Anthropic = require('@anthropic-ai/sdk');
 const twilio = require('twilio');
 const rateLimit = require('express-rate-limit');
 const helmet = require('helmet');
+const bcrypt = require('bcrypt');
 
 const app = express();
 
@@ -3728,6 +3729,47 @@ function authenticateCron(req, res, next) {
   }
 
   next();
+}
+
+// ============================================
+// ADMIN AUTHENTICATION
+// ============================================
+
+// Middleware para autenticar admin dashboard
+async function authenticateAdmin(req, res, next) {
+  const authHeader = req.headers.authorization;
+
+  if (!authHeader || !authHeader.startsWith('Basic ')) {
+    return res.status(401).json({ error: 'Unauthorized - Basic auth required' });
+  }
+
+  // Decodificar Basic auth (base64 de "user:password")
+  const base64Credentials = authHeader.substring(6);
+  const credentials = Buffer.from(base64Credentials, 'base64').toString('utf8');
+  const [username, password] = credentials.split(':');
+
+  const adminUser = process.env.ADMIN_USER;
+  const adminPasswordHash = process.env.ADMIN_PASSWORD_HASH;
+
+  if (!adminUser || !adminPasswordHash) {
+    console.error('⚠️ ADMIN: Missing ADMIN_USER or ADMIN_PASSWORD_HASH env vars');
+    return res.status(500).json({ error: 'Admin not configured' });
+  }
+
+  if (username !== adminUser) {
+    return res.status(401).json({ error: 'Invalid credentials' });
+  }
+
+  try {
+    const passwordMatch = await bcrypt.compare(password, adminPasswordHash);
+    if (!passwordMatch) {
+      return res.status(401).json({ error: 'Invalid credentials' });
+    }
+    next();
+  } catch (error) {
+    console.error('⚠️ ADMIN: bcrypt error:', error);
+    return res.status(500).json({ error: 'Authentication error' });
+  }
 }
 
 // Función principal para enviar recordatorios de gastos fijos
