@@ -4275,7 +4275,7 @@ app.get('/api/admin/costs/twilio', authenticateAdmin, async (req, res) => {
   }
 });
 
-// GET /api/admin/costs/railway - Info del proyecto Railway
+// GET /api/admin/costs/railway - Uso y costos calculados de Railway
 app.get('/api/admin/costs/railway', authenticateAdmin, async (req, res) => {
   try {
     const railwayToken = process.env.RAILWAY_API_TOKEN;
@@ -4285,16 +4285,33 @@ app.get('/api/admin/costs/railway', authenticateAdmin, async (req, res) => {
       return res.status(500).json({ error: 'Railway credentials not configured' });
     }
 
-    // Query simplificada - solo info del proyecto (sin me{} que puede fallar)
-    const query = `
+    // 1. Obtener métricas de uso
+    const usageQuery = `
+      query {
+        usage(
+          measurements: [CPU_USAGE, MEMORY_USAGE_GB, NETWORK_TX_GB],
+          groupBy: [SERVICE_ID],
+          projectId: "${projectId}"
+        ) {
+          measurement
+          value
+          tags {
+            serviceId
+          }
+        }
+      }
+    `;
+
+    // 2. Obtener nombres de servicios
+    const projectQuery = `
       query {
         project(id: "${projectId}") {
           name
           services {
             edges {
               node {
-                name
                 id
+                name
               }
             }
           }
@@ -4302,34 +4319,107 @@ app.get('/api/admin/costs/railway', authenticateAdmin, async (req, res) => {
       }
     `;
 
-    const response = await axios.post('https://backboard.railway.com/graphql/v2',
-      { query },
-      {
-        headers: {
-          'Authorization': `Bearer ${railwayToken}`,
-          'Content-Type': 'application/json'
+    const [usageResponse, projectResponse] = await Promise.all([
+      axios.post('https://backboard.railway.com/graphql/v2',
+        { query: usageQuery },
+        {
+          headers: {
+            'Authorization': `Bearer ${railwayToken}`,
+            'Content-Type': 'application/json'
+          }
         }
-      }
-    );
+      ),
+      axios.post('https://backboard.railway.com/graphql/v2',
+        { query: projectQuery },
+        {
+          headers: {
+            'Authorization': `Bearer ${railwayToken}`,
+            'Content-Type': 'application/json'
+          }
+        }
+      )
+    ]);
 
-    // Verificar errores GraphQL
-    if (response.data.errors) {
-      console.error('⚠️ ADMIN: Railway GraphQL errors:', response.data.errors);
-      return res.status(500).json({
-        error: 'Railway API error',
-        details: response.data.errors[0]?.message || 'Unknown error'
-      });
+    // Verificar errores
+    if (usageResponse.data.errors) {
+      console.error('⚠️ Railway usage errors:', usageResponse.data.errors);
+      return res.status(500).json({ error: 'Railway API error', details: usageResponse.data.errors[0]?.message });
     }
 
-    const data = response.data.data;
-    const project = data?.project;
+    const usageData = usageResponse.data.data?.usage || [];
+    const project = projectResponse.data.data?.project;
+
+    // Crear mapa de serviceId -> nombre
+    const serviceNames = {};
+    project?.services?.edges?.forEach(edge => {
+      serviceNames[edge.node.id] = edge.node.name;
+    });
+
+    // Precios Railway (por minuto)
+    const RAILWAY_PRICES = {
+      CPU_PER_VCPU_MINUTE: 0.000463,
+      MEMORY_PER_GB_MINUTE: 0.000231,
+      NETWORK_PER_GB: 0.10
+    };
+
+    // Agrupar métricas por servicio
+    const serviceMetrics = {};
+    usageData.forEach(item => {
+      const serviceId = item.tags?.serviceId;
+      if (!serviceId) return;
+
+      if (!serviceMetrics[serviceId]) {
+        serviceMetrics[serviceId] = {
+          name: serviceNames[serviceId] || serviceId.substring(0, 8),
+          cpu: 0,
+          memory: 0,
+          network: 0
+        };
+      }
+
+      if (item.measurement === 'CPU_USAGE') {
+        serviceMetrics[serviceId].cpu += item.value || 0;
+      } else if (item.measurement === 'MEMORY_USAGE_GB') {
+        serviceMetrics[serviceId].memory += item.value || 0;
+      } else if (item.measurement === 'NETWORK_TX_GB') {
+        serviceMetrics[serviceId].network += item.value || 0;
+      }
+    });
+
+    // Calcular costos por servicio
+    let totalCost = 0;
+    const services = Object.entries(serviceMetrics).map(([id, metrics]) => {
+      const cpuCost = metrics.cpu * RAILWAY_PRICES.CPU_PER_VCPU_MINUTE;
+      const memoryCost = metrics.memory * RAILWAY_PRICES.MEMORY_PER_GB_MINUTE;
+      const networkCost = metrics.network * RAILWAY_PRICES.NETWORK_PER_GB;
+      const serviceCost = cpuCost + memoryCost + networkCost;
+      totalCost += serviceCost;
+
+      return {
+        id,
+        name: metrics.name,
+        usage: {
+          cpu: Math.round(metrics.cpu * 100) / 100,
+          memoryGB: Math.round(metrics.memory * 100) / 100,
+          networkGB: Math.round(metrics.network * 1000000) / 1000000
+        },
+        cost: Math.round(serviceCost * 100) / 100
+      };
+    });
 
     res.json({
-      project: {
-        name: project?.name || 'Unknown',
-        services: project?.services
+      project: project?.name || 'Unknown',
+      summary: {
+        totalCost: Math.round(totalCost * 100) / 100,
+        currency: 'USD'
       },
-      note: 'Railway no expone costos por API. Ver dashboard.railway.app para detalles de facturacion.'
+      services,
+      pricing: {
+        cpu: '$0.000463/vCPU-min',
+        memory: '$0.000231/GB-min',
+        network: '$0.10/GB egress'
+      },
+      note: 'Costos calculados desde métricas de uso. El ciclo de facturación de Railway puede diferir.'
     });
   } catch (error) {
     console.error('⚠️ ADMIN: Railway costs error:', error.response?.data || error.message);
