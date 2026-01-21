@@ -4139,7 +4139,7 @@ app.get('/api/admin/users/:id', authenticateAdmin, async (req, res) => {
 // ADMIN COSTS ENDPOINTS
 // ============================================
 
-// GET /api/admin/costs/anthropic - Uso de Claude API (solo Haiku)
+// GET /api/admin/costs/anthropic - Uso de Claude API (solo Haiku para Ordenate)
 app.get('/api/admin/costs/anthropic', authenticateAdmin, async (req, res) => {
   try {
     const { startDate, endDate } = req.query;
@@ -4157,7 +4157,7 @@ app.get('/api/admin/costs/anthropic', authenticateAdmin, async (req, res) => {
       return res.status(500).json({ error: 'ANTHROPIC_ADMIN_API_KEY not configured' });
     }
 
-    // Usar cost_report endpoint con group_by description para ver desglose
+    // Usar cost_report endpoint con group_by description para ver desglose por modelo
     const url = new URL('https://api.anthropic.com/v1/organizations/cost_report');
     url.searchParams.append('starting_at', start.toISOString());
     url.searchParams.append('ending_at', end.toISOString());
@@ -4172,7 +4172,6 @@ app.get('/api/admin/costs/anthropic', authenticateAdmin, async (req, res) => {
     });
 
     // Procesar buckets y filtrar SOLO modelo Haiku
-    // El campo 'description' contiene el modelo, ej: "claude-3-5-haiku-20241022 input"
     const buckets = response.data?.data || [];
     let totalCost = 0;
     let inputCost = 0;
@@ -4184,21 +4183,25 @@ app.get('/api/admin/costs/anthropic', authenticateAdmin, async (req, res) => {
       let dayTotal = 0;
 
       results.forEach(result => {
-        // El modelo esta en 'description', no en 'model'
-        // Ejemplo: "claude-3-5-haiku-20241022 input" o "claude-3-5-haiku-20241022 output"
-        const description = (result.description || '').toLowerCase();
+        // IMPORTANTE: Usar el campo 'model' que viene directo de la API
+        // Ejemplo: "claude-haiku-4-5-20251001" o "claude-opus-4-5-20251101"
+        const model = (result.model || '').toLowerCase();
+        const tokenType = result.token_type || '';
 
         // Solo contar costos de Haiku (ignorar Opus, Sonnet, Web Search, etc.)
-        if (description.includes('haiku')) {
-          const amount = parseFloat(result.amount || 0);
-          dayTotal += amount;
-          totalCost += amount;
+        if (model.includes('haiku')) {
+          // El amount viene en centavos, convertir a dólares
+          const amountCents = parseFloat(result.amount || 0);
+          const amountUSD = amountCents / 100;
 
-          // Separar input vs output basado en description
-          if (description.includes('input')) {
-            inputCost += amount;
-          } else if (description.includes('output')) {
-            outputCost += amount;
+          dayTotal += amountUSD;
+          totalCost += amountUSD;
+
+          // Separar input vs output basado en token_type
+          if (tokenType.includes('input')) {
+            inputCost += amountUSD;
+          } else if (tokenType === 'output_tokens') {
+            outputCost += amountUSD;
           }
         }
       });
@@ -4206,7 +4209,7 @@ app.get('/api/admin/costs/anthropic', authenticateAdmin, async (req, res) => {
       if (dayTotal > 0) {
         dailyCosts.push({
           date: bucket.starting_at?.split('T')[0],
-          cost: Math.round(dayTotal * 100) / 100
+          cost: Math.round(dayTotal * 1000) / 1000 // 3 decimales para costos pequeños
         });
       }
     });
@@ -4214,13 +4217,15 @@ app.get('/api/admin/costs/anthropic', authenticateAdmin, async (req, res) => {
     res.json({
       period: { start: start.toISOString().split('T')[0], end: end.toISOString().split('T')[0] },
       summary: {
-        totalCost: Math.round(totalCost * 100) / 100,
-        inputCost: Math.round(inputCost * 100) / 100,
-        outputCost: Math.round(outputCost * 100) / 100,
-        model: 'claude-haiku (filtered)'
+        totalCost: Math.round(totalCost * 1000) / 1000,
+        inputCost: Math.round(inputCost * 1000) / 1000,
+        outputCost: Math.round(outputCost * 1000) / 1000,
+        model: 'claude-haiku-4.5 (filtered)',
+        currency: 'USD'
       },
       dailyCosts,
-      rawBuckets: buckets.length
+      rawBuckets: buckets.length,
+      note: 'Solo incluye uso de Haiku (Ordenate). Excluye Opus/Sonnet de uso personal.'
     });
   } catch (error) {
     console.error('⚠️ ADMIN: Anthropic costs error:', error.response?.data || error.message);
