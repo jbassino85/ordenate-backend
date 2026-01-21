@@ -4144,7 +4144,7 @@ app.get('/api/admin/costs/anthropic', authenticateAdmin, async (req, res) => {
   try {
     const { startDate, endDate } = req.query;
 
-    // Defaults: último mes
+    // Defaults: ultimo mes
     const now = new Date();
     const defaultStart = new Date(now.getFullYear(), now.getMonth(), 1);
     const defaultEnd = new Date(now.getFullYear(), now.getMonth() + 1, 0);
@@ -4172,6 +4172,7 @@ app.get('/api/admin/costs/anthropic', authenticateAdmin, async (req, res) => {
     });
 
     // Procesar buckets y filtrar SOLO modelo Haiku
+    // El campo 'description' contiene el modelo, ej: "claude-3-5-haiku-20241022 input"
     const buckets = response.data?.data || [];
     let totalCost = 0;
     let inputCost = 0;
@@ -4183,18 +4184,20 @@ app.get('/api/admin/costs/anthropic', authenticateAdmin, async (req, res) => {
       let dayTotal = 0;
 
       results.forEach(result => {
+        // El modelo esta en 'description', no en 'model'
+        // Ejemplo: "claude-3-5-haiku-20241022 input" o "claude-3-5-haiku-20241022 output"
+        const description = (result.description || '').toLowerCase();
+
         // Solo contar costos de Haiku (ignorar Opus, Sonnet, Web Search, etc.)
-        const model = result.model || '';
-        if (model.includes('haiku')) {
+        if (description.includes('haiku')) {
           const amount = parseFloat(result.amount || 0);
           dayTotal += amount;
           totalCost += amount;
 
-          // Separar input vs output
-          const tokenType = result.token_type || '';
-          if (tokenType.includes('input')) {
+          // Separar input vs output basado en description
+          if (description.includes('input')) {
             inputCost += amount;
-          } else if (tokenType.includes('output')) {
+          } else if (description.includes('output')) {
             outputCost += amount;
           }
         }
@@ -4214,7 +4217,7 @@ app.get('/api/admin/costs/anthropic', authenticateAdmin, async (req, res) => {
         totalCost: Math.round(totalCost * 100) / 100,
         inputCost: Math.round(inputCost * 100) / 100,
         outputCost: Math.round(outputCost * 100) / 100,
-        model: 'claude-haiku-4-5 (filtered)'
+        model: 'claude-haiku (filtered)'
       },
       dailyCosts,
       rawBuckets: buckets.length
@@ -4267,7 +4270,7 @@ app.get('/api/admin/costs/twilio', authenticateAdmin, async (req, res) => {
   }
 });
 
-// GET /api/admin/costs/railway - Uso de Railway (calculado desde usage)
+// GET /api/admin/costs/railway - Info del proyecto Railway
 app.get('/api/admin/costs/railway', authenticateAdmin, async (req, res) => {
   try {
     const railwayToken = process.env.RAILWAY_API_TOKEN;
@@ -4277,24 +4280,9 @@ app.get('/api/admin/costs/railway', authenticateAdmin, async (req, res) => {
       return res.status(500).json({ error: 'Railway credentials not configured' });
     }
 
-    // Tarifas Railway (USD)
-    const PRICING = {
-      CPU_PER_VCPU_MINUTE: 0.000463,
-      MEMORY_PER_GB_MINUTE: 0.000231,
-      NETWORK_PER_GB: 0.10
-    };
-
-    // Query para obtener uso del proyecto con métricas detalladas
+    // Query simplificada - solo info del proyecto (sin me{} que puede fallar)
     const query = `
       query {
-        usage(projectId: "${projectId}", measurements: [CPU_USAGE, MEMORY_USAGE_GB, NETWORK_TX_GB]) {
-          measurement
-          value
-          tags {
-            projectId
-            serviceId
-          }
-        }
         project(id: "${projectId}") {
           name
           services {
@@ -4304,12 +4292,6 @@ app.get('/api/admin/costs/railway', authenticateAdmin, async (req, res) => {
                 id
               }
             }
-          }
-        }
-        me {
-          customer {
-            billingPeriodEnd
-            creditBalance
           }
         }
       }
@@ -4325,76 +4307,28 @@ app.get('/api/admin/costs/railway', authenticateAdmin, async (req, res) => {
       }
     );
 
+    // Verificar errores GraphQL
+    if (response.data.errors) {
+      console.error('⚠️ ADMIN: Railway GraphQL errors:', response.data.errors);
+      return res.status(500).json({
+        error: 'Railway API error',
+        details: response.data.errors[0]?.message || 'Unknown error'
+      });
+    }
+
     const data = response.data.data;
-    const usageData = data?.usage || [];
-
-    // Crear mapa de servicios por ID
-    const services = {};
-    (data?.project?.services?.edges || []).forEach(edge => {
-      if (edge.node) {
-        services[edge.node.id] = edge.node.name;
-      }
-    });
-
-    // Calcular costos por tipo de recurso
-    let cpuCost = 0;
-    let memoryCost = 0;
-    let networkCost = 0;
-    const byService = {};
-
-    usageData.forEach(item => {
-      const serviceId = item.tags?.serviceId || 'unknown';
-      const serviceName = services[serviceId] || serviceId;
-      const value = item.value || 0;
-
-      if (!byService[serviceName]) {
-        byService[serviceName] = { cpu: 0, memory: 0, network: 0, cost: 0 };
-      }
-
-      switch (item.measurement) {
-        case 'CPU_USAGE':
-          const cpu = value * PRICING.CPU_PER_VCPU_MINUTE;
-          cpuCost += cpu;
-          byService[serviceName].cpu += value;
-          byService[serviceName].cost += cpu;
-          break;
-        case 'MEMORY_USAGE_GB':
-          const mem = value * PRICING.MEMORY_PER_GB_MINUTE;
-          memoryCost += mem;
-          byService[serviceName].memory += value;
-          byService[serviceName].cost += mem;
-          break;
-        case 'NETWORK_TX_GB':
-          const net = value * PRICING.NETWORK_PER_GB;
-          networkCost += net;
-          byService[serviceName].network += value;
-          byService[serviceName].cost += net;
-          break;
-      }
-    });
-
-    const totalCost = cpuCost + memoryCost + networkCost;
-    const customer = data?.me?.customer;
+    const project = data?.project;
 
     res.json({
-      project: data?.project?.name,
-      period: {
-        note: 'Current billing period usage',
-        billingPeriodEnd: customer?.billingPeriodEnd
+      project: {
+        name: project?.name || 'Unknown',
+        services: project?.services
       },
-      summary: {
-        totalCost: Math.round(totalCost * 100) / 100,
-        cpuCost: Math.round(cpuCost * 100) / 100,
-        memoryCost: Math.round(memoryCost * 100) / 100,
-        networkCost: Math.round(networkCost * 100) / 100,
-        creditBalance: customer?.creditBalance
-      },
-      byService,
-      pricing: PRICING
+      note: 'Railway no expone costos por API. Ver dashboard.railway.app para detalles de facturacion.'
     });
   } catch (error) {
     console.error('⚠️ ADMIN: Railway costs error:', error.response?.data || error.message);
-    res.status(500).json({ error: 'Error fetching Railway data', details: error.response?.data });
+    res.status(500).json({ error: 'Error fetching Railway data', details: error.response?.data?.errors?.[0]?.message || error.message });
   }
 });
 

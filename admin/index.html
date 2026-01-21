@@ -4,200 +4,196 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Ordenate Admin</title>
-  <style>
-    * { margin: 0; padding: 0; box-sizing: border-box; }
-    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #f5f7fa; color: #333; }
 
-    /* Login */
-    .login-container { display: flex; justify-content: center; align-items: center; min-height: 100vh; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); }
-    .login-box { background: white; padding: 40px; border-radius: 12px; box-shadow: 0 10px 40px rgba(0,0,0,0.2); width: 100%; max-width: 400px; }
-    .login-box h1 { text-align: center; margin-bottom: 30px; color: #333; }
-    .login-box input { width: 100%; padding: 12px 16px; margin-bottom: 16px; border: 1px solid #ddd; border-radius: 8px; font-size: 16px; }
-    .login-box button { width: 100%; padding: 14px; background: #667eea; color: white; border: none; border-radius: 8px; font-size: 16px; cursor: pointer; transition: background 0.3s; }
-    .login-box button:hover { background: #5a6fd6; }
-    .login-error { color: #e74c3c; text-align: center; margin-bottom: 16px; display: none; }
+  <!-- Favicon -->
+  <link rel="icon" type="image/png" href="/logoweb.png">
 
-    /* Dashboard Layout */
-    .dashboard { display: none; }
-    .sidebar { position: fixed; left: 0; top: 0; width: 220px; height: 100vh; background: #2c3e50; color: white; padding: 20px 0; }
-    .sidebar h2 { padding: 0 20px 20px; border-bottom: 1px solid #34495e; font-size: 18px; }
-    .sidebar nav { margin-top: 20px; }
-    .sidebar nav a { display: block; padding: 12px 20px; color: #bdc3c7; text-decoration: none; transition: all 0.3s; }
-    .sidebar nav a:hover, .sidebar nav a.active { background: #34495e; color: white; border-left: 3px solid #667eea; }
-    .sidebar .logout { position: absolute; bottom: 20px; left: 20px; right: 20px; }
-    .sidebar .logout button { width: 100%; padding: 10px; background: #e74c3c; color: white; border: none; border-radius: 6px; cursor: pointer; }
+  <!-- Tailwind CSS v4 -->
+  <script src="https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4"></script>
 
-    .main-content { margin-left: 220px; padding: 30px; min-height: 100vh; }
-    .page-header { margin-bottom: 30px; }
-    .page-header h1 { font-size: 28px; color: #2c3e50; }
+  <!-- Google Fonts - Poppins -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Poppins:wght@400;500;600;700&display=swap" rel="stylesheet">
 
-    /* KPI Cards */
-    .kpi-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 20px; margin-bottom: 30px; }
-    .kpi-card { background: white; padding: 24px; border-radius: 12px; box-shadow: 0 2px 10px rgba(0,0,0,0.08); }
-    .kpi-card h3 { font-size: 14px; color: #7f8c8d; margin-bottom: 8px; text-transform: uppercase; }
-    .kpi-card .value { font-size: 32px; font-weight: 700; color: #2c3e50; }
-    .kpi-card .sub { font-size: 13px; color: #95a5a6; margin-top: 8px; }
-    .kpi-card.highlight { background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); }
-    .kpi-card.highlight h3, .kpi-card.highlight .value, .kpi-card.highlight .sub { color: white; }
+  <style type="text/tailwindcss">
+    @theme {
+      --font-sans: 'Poppins', sans-serif;
 
-    /* Tables */
-    .table-container { background: white; border-radius: 12px; box-shadow: 0 2px 10px rgba(0,0,0,0.08); overflow: hidden; }
-    .table-header { padding: 20px; border-bottom: 1px solid #eee; display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 15px; }
-    .table-header h2 { font-size: 18px; color: #2c3e50; }
-    .filters { display: flex; gap: 10px; flex-wrap: wrap; }
-    .filters input, .filters select { padding: 8px 12px; border: 1px solid #ddd; border-radius: 6px; font-size: 14px; }
-    .filters input { width: 200px; }
-    table { width: 100%; border-collapse: collapse; }
-    th, td { padding: 14px 20px; text-align: left; border-bottom: 1px solid #eee; }
-    th { background: #f8f9fa; font-weight: 600; color: #7f8c8d; font-size: 13px; text-transform: uppercase; }
-    tr:hover { background: #f8f9fa; }
-    .badge { padding: 4px 10px; border-radius: 20px; font-size: 12px; font-weight: 500; }
-    .badge-free { background: #e8f5e9; color: #2e7d32; }
-    .badge-premium { background: #fff3e0; color: #ef6c00; }
-    .btn-view { padding: 6px 12px; background: #667eea; color: white; border: none; border-radius: 6px; cursor: pointer; font-size: 13px; }
-    .btn-view:hover { background: #5a6fd6; }
-
-    /* Pagination */
-    .pagination { padding: 20px; display: flex; justify-content: center; gap: 8px; }
-    .pagination button { padding: 8px 14px; border: 1px solid #ddd; background: white; border-radius: 6px; cursor: pointer; }
-    .pagination button.active { background: #667eea; color: white; border-color: #667eea; }
-    .pagination button:disabled { opacity: 0.5; cursor: not-allowed; }
-
-    /* Modal */
-    .modal { display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.5); z-index: 1000; justify-content: center; align-items: center; }
-    .modal.active { display: flex; }
-    .modal-content { background: white; border-radius: 12px; width: 90%; max-width: 800px; max-height: 90vh; overflow-y: auto; }
-    .modal-header { padding: 20px; border-bottom: 1px solid #eee; display: flex; justify-content: space-between; align-items: center; }
-    .modal-header h2 { font-size: 20px; }
-    .modal-close { background: none; border: none; font-size: 24px; cursor: pointer; color: #7f8c8d; }
-    .modal-body { padding: 20px; }
-    .user-info-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 20px; margin-bottom: 20px; }
-    .user-info-item { }
-    .user-info-item label { font-size: 12px; color: #7f8c8d; text-transform: uppercase; }
-    .user-info-item p { font-size: 16px; color: #2c3e50; margin-top: 4px; }
-
-    /* Costs Section */
-    .costs-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 20px; }
-    .cost-card { background: white; border-radius: 12px; box-shadow: 0 2px 10px rgba(0,0,0,0.08); padding: 24px; }
-    .cost-card h3 { font-size: 16px; color: #2c3e50; margin-bottom: 16px; padding-bottom: 12px; border-bottom: 1px solid #eee; }
-    .cost-item { display: flex; justify-content: space-between; padding: 8px 0; border-bottom: 1px solid #f5f5f5; }
-    .cost-item:last-child { border-bottom: none; }
-
-    /* Sections */
-    .section { display: none; }
-    .section.active { display: block; }
-
-    /* Loading */
-    .loading { text-align: center; padding: 40px; color: #7f8c8d; }
-
-    /* Responsive */
-    @media (max-width: 768px) {
-      .sidebar { width: 100%; height: auto; position: relative; }
-      .main-content { margin-left: 0; }
-      .user-info-grid { grid-template-columns: 1fr; }
+      /* Paleta General del Sitio (Dark Tech) */
+      --color-main: #0B0F15;
+      --color-sec: #11141E;
+      --color-card: #1A1D2D;
+      --color-border: #2E3245;
+      --color-accent: #4F46E5;
     }
   </style>
+
+  <style>
+    * {
+      -webkit-font-smoothing: antialiased;
+      -moz-osx-font-smoothing: grayscale;
+    }
+    body { font-family: 'Poppins', sans-serif; }
+
+    /* Modal */
+    .modal { display: none; }
+    .modal.active { display: flex; }
+
+    /* Custom scrollbar */
+    ::-webkit-scrollbar { width: 8px; height: 8px; }
+    ::-webkit-scrollbar-track { background: #11141E; }
+    ::-webkit-scrollbar-thumb { background: #2E3245; border-radius: 4px; }
+    ::-webkit-scrollbar-thumb:hover { background: #4F46E5; }
+  </style>
 </head>
-<body>
+<body class="bg-main text-gray-100 min-h-screen">
   <!-- Login -->
-  <div class="login-container" id="loginPage">
-    <div class="login-box">
-      <h1>Ordenate Admin</h1>
-      <div class="login-error" id="loginError">Credenciales incorrectas</div>
-      <input type="text" id="username" placeholder="Usuario" autocomplete="username">
-      <input type="password" id="password" placeholder="Password" autocomplete="current-password">
-      <button onclick="login()">Ingresar</button>
+  <div class="min-h-screen flex justify-center items-center bg-gradient-to-br from-main via-sec to-card" id="loginPage">
+    <div class="bg-card p-10 rounded-2xl shadow-2xl w-full max-w-md border border-border">
+      <div class="flex items-center justify-center gap-3 mb-8">
+        <img src="/logoweb.png" alt="Ordenate" class="w-10 h-10">
+        <h1 class="text-2xl font-semibold text-white">Ordenate<span class="text-accent">.Admin</span></h1>
+      </div>
+      <div class="text-red-400 text-center mb-4 hidden" id="loginError">Credenciales incorrectas</div>
+      <input type="text" id="username" placeholder="Usuario" autocomplete="username"
+        class="w-full px-4 py-3 mb-4 bg-sec border border-border rounded-xl text-white placeholder-gray-500 focus:outline-none focus:border-accent transition">
+      <input type="password" id="password" placeholder="Password" autocomplete="current-password"
+        class="w-full px-4 py-3 mb-6 bg-sec border border-border rounded-xl text-white placeholder-gray-500 focus:outline-none focus:border-accent transition">
+      <button onclick="login()"
+        class="w-full py-3 bg-accent hover:bg-indigo-500 text-white font-semibold rounded-xl transition shadow-lg shadow-accent/30">
+        Ingresar
+      </button>
     </div>
   </div>
 
   <!-- Dashboard -->
-  <div class="dashboard" id="dashboard">
-    <aside class="sidebar">
-      <h2>Ordenate Admin</h2>
-      <nav>
-        <a href="#" class="active" data-section="overview">Dashboard</a>
-        <a href="#" data-section="users">Usuarios</a>
-        <a href="#" data-section="costs">Costos</a>
+  <div class="hidden" id="dashboard">
+    <!-- Sidebar -->
+    <aside class="fixed left-0 top-0 w-56 h-screen bg-sec border-r border-border flex flex-col">
+      <div class="p-5 border-b border-border">
+        <div class="flex items-center gap-2">
+          <img src="/logoweb.png" alt="Ordenate" class="w-7 h-7">
+          <span class="font-semibold text-white">Ordenate<span class="text-accent">.Admin</span></span>
+        </div>
+      </div>
+      <nav class="flex-1 py-4">
+        <a href="#" class="nav-link active" data-section="overview">
+          <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2H6a2 2 0 01-2-2V6zM14 6a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2h-2a2 2 0 01-2-2V6zM4 16a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2H6a2 2 0 01-2-2v-2zM14 16a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2h-2a2 2 0 01-2-2v-2z"></path></svg>
+          Dashboard
+        </a>
+        <a href="#" class="nav-link" data-section="users">
+          <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4.354a4 4 0 110 5.292M15 21H3v-1a6 6 0 0112 0v1zm0 0h6v-1a6 6 0 00-9-5.197M13 7a4 4 0 11-8 0 4 4 0 018 0z"></path></svg>
+          Usuarios
+        </a>
+        <a href="#" class="nav-link" data-section="costs">
+          <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8c-1.657 0-3 .895-3 2s1.343 2 3 2 3 .895 3 2-1.343 2-3 2m0-8c1.11 0 2.08.402 2.599 1M12 8V7m0 1v8m0 0v1m0-1c-1.11 0-2.08-.402-2.599-1M21 12a9 9 0 11-18 0 9 9 0 0118 0z"></path></svg>
+          Costos
+        </a>
       </nav>
-      <div class="logout">
-        <button onclick="logout()">Cerrar Sesion</button>
+      <div class="p-4 border-t border-border">
+        <button onclick="logout()"
+          class="w-full py-2 px-4 bg-red-500/10 hover:bg-red-500/20 text-red-400 rounded-lg transition text-sm font-medium">
+          Cerrar Sesion
+        </button>
       </div>
     </aside>
 
-    <main class="main-content">
+    <style>
+      .nav-link {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        padding: 12px 20px;
+        color: #9CA3AF;
+        text-decoration: none;
+        transition: all 0.2s;
+        border-left: 3px solid transparent;
+      }
+      .nav-link:hover { background: #1A1D2D; color: white; }
+      .nav-link.active { background: #1A1D2D; color: white; border-left-color: #4F46E5; }
+    </style>
+
+    <!-- Main Content -->
+    <main class="ml-56 p-8 min-h-screen">
       <!-- Overview Section -->
       <div class="section active" id="overview">
-        <div class="page-header">
-          <h1>Dashboard</h1>
-        </div>
-        <div class="kpi-grid" id="kpiGrid">
-          <div class="loading">Cargando...</div>
+        <h1 class="text-2xl font-semibold text-white mb-6">Dashboard</h1>
+        <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-5" id="kpiGrid">
+          <div class="bg-card rounded-xl p-6 border border-border animate-pulse">
+            <div class="h-4 bg-border rounded w-24 mb-3"></div>
+            <div class="h-8 bg-border rounded w-16"></div>
+          </div>
         </div>
       </div>
 
       <!-- Users Section -->
-      <div class="section" id="users">
-        <div class="page-header">
-          <h1>Usuarios</h1>
-        </div>
-        <div class="table-container">
-          <div class="table-header">
-            <h2>Lista de Usuarios</h2>
-            <div class="filters">
-              <input type="text" id="searchInput" placeholder="Buscar telefono o nombre...">
-              <select id="planFilter">
+      <div class="section hidden" id="users">
+        <h1 class="text-2xl font-semibold text-white mb-6">Usuarios</h1>
+        <div class="bg-card rounded-xl border border-border overflow-hidden">
+          <div class="p-5 border-b border-border flex flex-wrap gap-4 items-center justify-between">
+            <h2 class="text-lg font-medium text-white">Lista de Usuarios</h2>
+            <div class="flex gap-3">
+              <input type="text" id="searchInput" placeholder="Buscar telefono o nombre..."
+                class="px-4 py-2 bg-sec border border-border rounded-lg text-white placeholder-gray-500 text-sm focus:outline-none focus:border-accent w-56">
+              <select id="planFilter"
+                class="px-4 py-2 bg-sec border border-border rounded-lg text-white text-sm focus:outline-none focus:border-accent">
                 <option value="">Todos los planes</option>
                 <option value="free">Free</option>
                 <option value="premium">Premium</option>
               </select>
             </div>
           </div>
-          <table>
-            <thead>
-              <tr>
-                <th>Usuario</th>
-                <th>Plan</th>
-                <th>Transacciones</th>
-                <th>Ultima Actividad</th>
-                <th>Registro</th>
-                <th></th>
-              </tr>
-            </thead>
-            <tbody id="usersTable">
-              <tr><td colspan="6" class="loading">Cargando...</td></tr>
-            </tbody>
-          </table>
-          <div class="pagination" id="pagination"></div>
+          <div class="overflow-x-auto">
+            <table class="w-full">
+              <thead>
+                <tr class="bg-sec/50">
+                  <th class="px-5 py-3 text-left text-xs font-semibold text-gray-400 uppercase tracking-wider">Usuario</th>
+                  <th class="px-5 py-3 text-left text-xs font-semibold text-gray-400 uppercase tracking-wider">Plan</th>
+                  <th class="px-5 py-3 text-left text-xs font-semibold text-gray-400 uppercase tracking-wider">Transacciones</th>
+                  <th class="px-5 py-3 text-left text-xs font-semibold text-gray-400 uppercase tracking-wider">Ultima Actividad</th>
+                  <th class="px-5 py-3 text-left text-xs font-semibold text-gray-400 uppercase tracking-wider">Registro</th>
+                  <th class="px-5 py-3"></th>
+                </tr>
+              </thead>
+              <tbody id="usersTable" class="divide-y divide-border">
+                <tr><td colspan="6" class="px-5 py-8 text-center text-gray-500">Cargando...</td></tr>
+              </tbody>
+            </table>
+          </div>
+          <div class="p-4 flex justify-center gap-2" id="pagination"></div>
         </div>
       </div>
 
       <!-- Costs Section -->
-      <div class="section" id="costs">
-        <div class="page-header">
-          <h1>Costos Operativos</h1>
-        </div>
-        <div class="costs-grid" id="costsGrid">
-          <div class="loading">Cargando...</div>
+      <div class="section hidden" id="costs">
+        <h1 class="text-2xl font-semibold text-white mb-6">Costos Operativos</h1>
+        <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-5" id="costsGrid">
+          <div class="bg-card rounded-xl p-6 border border-border animate-pulse">
+            <div class="h-5 bg-border rounded w-32 mb-4"></div>
+            <div class="h-4 bg-border rounded w-full mb-2"></div>
+            <div class="h-4 bg-border rounded w-3/4"></div>
+          </div>
         </div>
       </div>
     </main>
   </div>
 
   <!-- User Detail Modal -->
-  <div class="modal" id="userModal">
-    <div class="modal-content">
-      <div class="modal-header">
-        <h2>Detalle de Usuario</h2>
-        <button class="modal-close" onclick="closeModal()">&times;</button>
+  <div class="modal fixed inset-0 bg-black/70 z-50 justify-center items-center p-4" id="userModal">
+    <div class="bg-card rounded-2xl w-full max-w-3xl max-h-[90vh] overflow-hidden border border-border">
+      <div class="p-5 border-b border-border flex justify-between items-center">
+        <h2 class="text-xl font-semibold text-white">Detalle de Usuario</h2>
+        <button onclick="closeModal()" class="text-gray-400 hover:text-white text-2xl leading-none">&times;</button>
       </div>
-      <div class="modal-body" id="userModalBody">
-        <div class="loading">Cargando...</div>
+      <div class="p-5 overflow-y-auto max-h-[calc(90vh-80px)]" id="userModalBody">
+        <div class="text-gray-500 text-center py-8">Cargando...</div>
       </div>
     </div>
   </div>
 
   <script>
-    const API_BASE = ''; // Mismo dominio (api.ordenate.ai)
+    const API_BASE = '';
     let authToken = localStorage.getItem('adminToken');
     let currentPage = 1;
 
@@ -225,28 +221,28 @@
         if (res.ok && data.token) {
           authToken = data.token;
           localStorage.setItem('adminToken', authToken);
-          errorEl.style.display = 'none';
+          errorEl.classList.add('hidden');
           showDashboard();
           loadDashboard();
         } else {
-          errorEl.style.display = 'block';
+          errorEl.classList.remove('hidden');
         }
       } catch (err) {
         errorEl.textContent = 'Error de conexion';
-        errorEl.style.display = 'block';
+        errorEl.classList.remove('hidden');
       }
     }
 
     function logout() {
       localStorage.removeItem('adminToken');
       authToken = null;
-      document.getElementById('loginPage').style.display = 'flex';
-      document.getElementById('dashboard').style.display = 'none';
+      document.getElementById('loginPage').classList.remove('hidden');
+      document.getElementById('dashboard').classList.add('hidden');
     }
 
     function showDashboard() {
-      document.getElementById('loginPage').style.display = 'none';
-      document.getElementById('dashboard').style.display = 'block';
+      document.getElementById('loginPage').classList.add('hidden');
+      document.getElementById('dashboard').classList.remove('hidden');
     }
 
     // API calls
@@ -274,45 +270,45 @@
     function renderKPIs(data) {
       const grid = document.getElementById('kpiGrid');
       grid.innerHTML = `
-        <div class="kpi-card highlight">
-          <h3>Total Usuarios</h3>
-          <div class="value">${data.users.total}</div>
-          <div class="sub">+${data.users.thisMonth} este mes</div>
+        <div class="bg-gradient-to-br from-accent to-indigo-600 rounded-xl p-6 shadow-lg shadow-accent/20">
+          <h3 class="text-sm font-medium text-white/80 uppercase tracking-wide">Total Usuarios</h3>
+          <div class="text-4xl font-bold text-white mt-2">${data.users.total}</div>
+          <div class="text-sm text-white/70 mt-2">+${data.users.thisMonth} este mes</div>
         </div>
-        <div class="kpi-card">
-          <h3>Usuarios Activos (MAU)</h3>
-          <div class="value">${data.activity.mau}</div>
-          <div class="sub">DAU: ${data.activity.dau} | WAU: ${data.activity.wau}</div>
+        <div class="bg-card rounded-xl p-6 border border-border hover:border-accent/50 transition">
+          <h3 class="text-sm font-medium text-gray-400 uppercase tracking-wide">Usuarios Activos (MAU)</h3>
+          <div class="text-4xl font-bold text-white mt-2">${data.activity.mau}</div>
+          <div class="text-sm text-gray-500 mt-2">DAU: ${data.activity.dau} | WAU: ${data.activity.wau}</div>
         </div>
-        <div class="kpi-card">
-          <h3>Transacciones</h3>
-          <div class="value">${data.transactions.total.toLocaleString()}</div>
-          <div class="sub">${data.transactions.thisMonth.toLocaleString()} este mes</div>
+        <div class="bg-card rounded-xl p-6 border border-border hover:border-accent/50 transition">
+          <h3 class="text-sm font-medium text-gray-400 uppercase tracking-wide">Transacciones</h3>
+          <div class="text-4xl font-bold text-white mt-2">${data.transactions.total.toLocaleString()}</div>
+          <div class="text-sm text-gray-500 mt-2">${data.transactions.thisMonth.toLocaleString()} este mes</div>
         </div>
-        <div class="kpi-card">
-          <h3>Promedio Tx/Usuario</h3>
-          <div class="value">${data.transactions.avgPerUser}</div>
-          <div class="sub">Por usuario activo</div>
+        <div class="bg-card rounded-xl p-6 border border-border hover:border-accent/50 transition">
+          <h3 class="text-sm font-medium text-gray-400 uppercase tracking-wide">Promedio Tx/Usuario</h3>
+          <div class="text-4xl font-bold text-white mt-2">${data.transactions.avgPerUser}</div>
+          <div class="text-sm text-gray-500 mt-2">Por usuario activo</div>
         </div>
-        <div class="kpi-card">
-          <h3>Total Gastos Registrados</h3>
-          <div class="value">$${(data.transactions.totalExpenses / 1000000).toFixed(1)}M</div>
-          <div class="sub">Ingresos: $${(data.transactions.totalIncome / 1000000).toFixed(1)}M</div>
+        <div class="bg-card rounded-xl p-6 border border-border hover:border-accent/50 transition">
+          <h3 class="text-sm font-medium text-gray-400 uppercase tracking-wide">Total Gastos Registrados</h3>
+          <div class="text-4xl font-bold text-white mt-2">$${(data.transactions.totalExpenses / 1000000).toFixed(1)}M</div>
+          <div class="text-sm text-gray-500 mt-2">Ingresos: $${(data.transactions.totalIncome / 1000000).toFixed(1)}M</div>
         </div>
-        <div class="kpi-card">
-          <h3>Usuarios con Gastos Fijos</h3>
-          <div class="value">${data.fixedExpenses.usersWithFixed}</div>
-          <div class="sub">${data.fixedExpenses.totalFixed} gastos fijos totales</div>
+        <div class="bg-card rounded-xl p-6 border border-border hover:border-accent/50 transition">
+          <h3 class="text-sm font-medium text-gray-400 uppercase tracking-wide">Usuarios con Gastos Fijos</h3>
+          <div class="text-4xl font-bold text-white mt-2">${data.fixedExpenses.usersWithFixed}</div>
+          <div class="text-sm text-gray-500 mt-2">${data.fixedExpenses.totalFixed} gastos fijos totales</div>
         </div>
-        <div class="kpi-card">
-          <h3>Plan Free</h3>
-          <div class="value">${data.users.byPlan.free || 0}</div>
-          <div class="sub">${((data.users.byPlan.free || 0) / data.users.total * 100).toFixed(1)}% del total</div>
+        <div class="bg-card rounded-xl p-6 border border-border hover:border-accent/50 transition">
+          <h3 class="text-sm font-medium text-gray-400 uppercase tracking-wide">Plan Free</h3>
+          <div class="text-4xl font-bold text-white mt-2">${data.users.byPlan.free || 0}</div>
+          <div class="text-sm text-gray-500 mt-2">${((data.users.byPlan.free || 0) / data.users.total * 100).toFixed(1)}% del total</div>
         </div>
-        <div class="kpi-card">
-          <h3>Plan Premium</h3>
-          <div class="value">${data.users.byPlan.premium || 0}</div>
-          <div class="sub">${((data.users.byPlan.premium || 0) / data.users.total * 100).toFixed(1)}% del total</div>
+        <div class="bg-card rounded-xl p-6 border border-border hover:border-accent/50 transition">
+          <h3 class="text-sm font-medium text-gray-400 uppercase tracking-wide">Plan Premium</h3>
+          <div class="text-4xl font-bold text-white mt-2">${data.users.byPlan.premium || 0}</div>
+          <div class="text-sm text-gray-500 mt-2">${((data.users.byPlan.premium || 0) / data.users.total * 100).toFixed(1)}% del total</div>
         </div>
       `;
     }
@@ -340,22 +336,30 @@
       const pagination = document.getElementById('pagination');
 
       if (data.users.length === 0) {
-        tbody.innerHTML = '<tr><td colspan="6" class="loading">No se encontraron usuarios</td></tr>';
+        tbody.innerHTML = '<tr><td colspan="6" class="px-5 py-8 text-center text-gray-500">No se encontraron usuarios</td></tr>';
         pagination.innerHTML = '';
         return;
       }
 
       tbody.innerHTML = data.users.map(u => `
-        <tr>
-          <td>
-            <strong>${u.name || 'Sin nombre'}</strong><br>
-            <small style="color:#7f8c8d">${u.phone}</small>
+        <tr class="hover:bg-sec/50 transition">
+          <td class="px-5 py-4">
+            <div class="font-medium text-white">${u.name || 'Sin nombre'}</div>
+            <div class="text-sm text-gray-500">${u.phone}</div>
           </td>
-          <td><span class="badge badge-${u.plan}">${u.plan}</span></td>
-          <td>${u.transactionCount}</td>
-          <td>${u.lastInteraction ? new Date(u.lastInteraction).toLocaleDateString('es-CL') : '-'}</td>
-          <td>${new Date(u.createdAt).toLocaleDateString('es-CL')}</td>
-          <td><button class="btn-view" onclick="viewUser(${u.id})">Ver</button></td>
+          <td class="px-5 py-4">
+            <span class="px-3 py-1 rounded-full text-xs font-medium ${u.plan === 'premium' ? 'bg-amber-500/10 text-amber-400' : 'bg-green-500/10 text-green-400'}">
+              ${u.plan}
+            </span>
+          </td>
+          <td class="px-5 py-4 text-gray-300">${u.transactionCount}</td>
+          <td class="px-5 py-4 text-gray-300">${u.lastInteraction ? new Date(u.lastInteraction).toLocaleDateString('es-CL') : '-'}</td>
+          <td class="px-5 py-4 text-gray-300">${new Date(u.createdAt).toLocaleDateString('es-CL')}</td>
+          <td class="px-5 py-4">
+            <button onclick="viewUser(${u.id})" class="px-3 py-1.5 bg-accent/10 hover:bg-accent/20 text-accent rounded-lg text-sm font-medium transition">
+              Ver
+            </button>
+          </td>
         </tr>
       `).join('');
 
@@ -363,13 +367,22 @@
       const { page, totalPages } = data.pagination;
       let paginationHTML = '';
 
-      paginationHTML += `<button ${page === 1 ? 'disabled' : ''} onclick="loadUsers(${page - 1})">Anterior</button>`;
+      paginationHTML += `<button ${page === 1 ? 'disabled' : ''} onclick="loadUsers(${page - 1})"
+        class="px-3 py-1.5 rounded-lg text-sm font-medium transition ${page === 1 ? 'bg-border/50 text-gray-600 cursor-not-allowed' : 'bg-sec border border-border text-gray-300 hover:border-accent'}">
+        Anterior
+      </button>`;
 
       for (let i = 1; i <= totalPages && i <= 5; i++) {
-        paginationHTML += `<button class="${i === page ? 'active' : ''}" onclick="loadUsers(${i})">${i}</button>`;
+        paginationHTML += `<button onclick="loadUsers(${i})"
+          class="px-3 py-1.5 rounded-lg text-sm font-medium transition ${i === page ? 'bg-accent text-white' : 'bg-sec border border-border text-gray-300 hover:border-accent'}">
+          ${i}
+        </button>`;
       }
 
-      paginationHTML += `<button ${page === totalPages ? 'disabled' : ''} onclick="loadUsers(${page + 1})">Siguiente</button>`;
+      paginationHTML += `<button ${page === totalPages ? 'disabled' : ''} onclick="loadUsers(${page + 1})"
+        class="px-3 py-1.5 rounded-lg text-sm font-medium transition ${page === totalPages ? 'bg-border/50 text-gray-600 cursor-not-allowed' : 'bg-sec border border-border text-gray-300 hover:border-accent'}">
+        Siguiente
+      </button>`;
 
       pagination.innerHTML = paginationHTML;
     }
@@ -377,13 +390,13 @@
     // View User Detail
     async function viewUser(id) {
       document.getElementById('userModal').classList.add('active');
-      document.getElementById('userModalBody').innerHTML = '<div class="loading">Cargando...</div>';
+      document.getElementById('userModalBody').innerHTML = '<div class="text-gray-500 text-center py-8">Cargando...</div>';
 
       try {
         const data = await apiCall(`/api/admin/users/${id}`);
         renderUserDetail(data);
       } catch (err) {
-        document.getElementById('userModalBody').innerHTML = '<p>Error cargando usuario</p>';
+        document.getElementById('userModalBody').innerHTML = '<p class="text-red-400">Error cargando usuario</p>';
       }
     }
 
@@ -391,90 +404,124 @@
       const { user, stats, recentTransactions, fixedExpenses } = data;
 
       document.getElementById('userModalBody').innerHTML = `
-        <div class="user-info-grid">
-          <div class="user-info-item">
-            <label>Nombre</label>
-            <p>${user.name || 'Sin nombre'}</p>
+        <div class="grid grid-cols-2 gap-4 mb-6">
+          <div class="bg-sec/50 rounded-lg p-4">
+            <div class="text-xs text-gray-500 uppercase tracking-wide">Nombre</div>
+            <div class="text-white mt-1">${user.name || 'Sin nombre'}</div>
           </div>
-          <div class="user-info-item">
-            <label>Telefono</label>
-            <p>${user.phone}</p>
+          <div class="bg-sec/50 rounded-lg p-4">
+            <div class="text-xs text-gray-500 uppercase tracking-wide">Telefono</div>
+            <div class="text-white mt-1">${user.phone}</div>
           </div>
-          <div class="user-info-item">
-            <label>Plan</label>
-            <p><span class="badge badge-${user.plan}">${user.plan}</span></p>
+          <div class="bg-sec/50 rounded-lg p-4">
+            <div class="text-xs text-gray-500 uppercase tracking-wide">Plan</div>
+            <div class="mt-1">
+              <span class="px-2 py-0.5 rounded-full text-xs font-medium ${user.plan === 'premium' ? 'bg-amber-500/10 text-amber-400' : 'bg-green-500/10 text-green-400'}">
+                ${user.plan}
+              </span>
+            </div>
           </div>
-          <div class="user-info-item">
-            <label>Ingreso Mensual</label>
-            <p>$${user.monthlyIncome ? user.monthlyIncome.toLocaleString('es-CL') : '-'}</p>
+          <div class="bg-sec/50 rounded-lg p-4">
+            <div class="text-xs text-gray-500 uppercase tracking-wide">Ingreso Mensual</div>
+            <div class="text-white mt-1">$${user.monthlyIncome ? user.monthlyIncome.toLocaleString('es-CL') : '-'}</div>
           </div>
-          <div class="user-info-item">
-            <label>Meta de Ahorro</label>
-            <p>$${user.savingsGoal ? user.savingsGoal.toLocaleString('es-CL') : '-'}</p>
+          <div class="bg-sec/50 rounded-lg p-4">
+            <div class="text-xs text-gray-500 uppercase tracking-wide">Meta de Ahorro</div>
+            <div class="text-white mt-1">$${user.savingsGoal ? user.savingsGoal.toLocaleString('es-CL') : '-'}</div>
           </div>
-          <div class="user-info-item">
-            <label>Registro</label>
-            <p>${new Date(user.createdAt).toLocaleDateString('es-CL')}</p>
+          <div class="bg-sec/50 rounded-lg p-4">
+            <div class="text-xs text-gray-500 uppercase tracking-wide">Registro</div>
+            <div class="text-white mt-1">${new Date(user.createdAt).toLocaleDateString('es-CL')}</div>
           </div>
-          <div class="user-info-item">
-            <label>Ultima Actividad</label>
-            <p>${user.lastInteraction ? new Date(user.lastInteraction).toLocaleString('es-CL') : '-'}</p>
+          <div class="bg-sec/50 rounded-lg p-4">
+            <div class="text-xs text-gray-500 uppercase tracking-wide">Ultima Actividad</div>
+            <div class="text-white mt-1">${user.lastInteraction ? new Date(user.lastInteraction).toLocaleString('es-CL') : '-'}</div>
           </div>
-          <div class="user-info-item">
-            <label>Onboarding</label>
-            <p>${user.onboardingComplete ? 'Completado' : 'Paso ' + (user.onboardingStep || 1)}</p>
-          </div>
-        </div>
-
-        <h3 style="margin: 20px 0 10px; font-size: 16px;">Estadisticas</h3>
-        <div class="user-info-grid">
-          <div class="user-info-item">
-            <label>Total Transacciones</label>
-            <p>${stats.totalTransactions}</p>
-          </div>
-          <div class="user-info-item">
-            <label>Este Mes</label>
-            <p>${stats.transactionsThisMonth}</p>
-          </div>
-          <div class="user-info-item">
-            <label>Total Gastos</label>
-            <p>$${stats.totalExpenses.toLocaleString('es-CL')}</p>
-          </div>
-          <div class="user-info-item">
-            <label>Total Ingresos</label>
-            <p>$${stats.totalIncome.toLocaleString('es-CL')}</p>
+          <div class="bg-sec/50 rounded-lg p-4">
+            <div class="text-xs text-gray-500 uppercase tracking-wide">Onboarding</div>
+            <div class="text-white mt-1">${user.onboardingComplete ? 'Completado' : 'Paso ' + (user.onboardingStep || 1)}</div>
           </div>
         </div>
 
-        <h3 style="margin: 20px 0 10px; font-size: 16px;">Gastos Fijos (${fixedExpenses.length})</h3>
+        <h3 class="text-lg font-medium text-white mb-3">Estadisticas</h3>
+        <div class="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
+          <div class="bg-sec/50 rounded-lg p-4 text-center">
+            <div class="text-2xl font-bold text-white">${stats.totalTransactions}</div>
+            <div class="text-xs text-gray-500 mt-1">Total Tx</div>
+          </div>
+          <div class="bg-sec/50 rounded-lg p-4 text-center">
+            <div class="text-2xl font-bold text-white">${stats.transactionsThisMonth}</div>
+            <div class="text-xs text-gray-500 mt-1">Este Mes</div>
+          </div>
+          <div class="bg-sec/50 rounded-lg p-4 text-center">
+            <div class="text-2xl font-bold text-red-400">$${(stats.totalExpenses / 1000).toFixed(0)}K</div>
+            <div class="text-xs text-gray-500 mt-1">Gastos</div>
+          </div>
+          <div class="bg-sec/50 rounded-lg p-4 text-center">
+            <div class="text-2xl font-bold text-green-400">$${(stats.totalIncome / 1000).toFixed(0)}K</div>
+            <div class="text-xs text-gray-500 mt-1">Ingresos</div>
+          </div>
+        </div>
+
+        <h3 class="text-lg font-medium text-white mb-3">Gastos Fijos (${fixedExpenses.length})</h3>
         ${fixedExpenses.length > 0 ? `
-          <table style="font-size: 14px;">
-            <tr><th>Descripcion</th><th>Monto</th><th>Dia</th><th>Estado</th></tr>
-            ${fixedExpenses.map(f => `
-              <tr>
-                <td>${f.category_emoji || ''} ${f.description}</td>
-                <td>$${parseFloat(f.typical_amount).toLocaleString('es-CL')}</td>
-                <td>${f.reminder_day || '-'}</td>
-                <td>${f.is_active ? 'Activo' : 'Pausado'}</td>
-              </tr>
-            `).join('')}
-          </table>
-        ` : '<p style="color:#7f8c8d">Sin gastos fijos</p>'}
+          <div class="bg-sec/30 rounded-lg overflow-hidden mb-6">
+            <table class="w-full text-sm">
+              <thead>
+                <tr class="border-b border-border">
+                  <th class="px-4 py-2 text-left text-xs text-gray-500 uppercase">Descripcion</th>
+                  <th class="px-4 py-2 text-left text-xs text-gray-500 uppercase">Monto</th>
+                  <th class="px-4 py-2 text-left text-xs text-gray-500 uppercase">Dia</th>
+                  <th class="px-4 py-2 text-left text-xs text-gray-500 uppercase">Estado</th>
+                </tr>
+              </thead>
+              <tbody class="divide-y divide-border/50">
+                ${fixedExpenses.map(f => `
+                  <tr>
+                    <td class="px-4 py-2 text-gray-300">${f.category_emoji || ''} ${f.description}</td>
+                    <td class="px-4 py-2 text-gray-300">$${parseFloat(f.typical_amount).toLocaleString('es-CL')}</td>
+                    <td class="px-4 py-2 text-gray-300">${f.reminder_day || '-'}</td>
+                    <td class="px-4 py-2">
+                      <span class="px-2 py-0.5 rounded text-xs ${f.is_active ? 'bg-green-500/10 text-green-400' : 'bg-gray-500/10 text-gray-400'}">
+                        ${f.is_active ? 'Activo' : 'Pausado'}
+                      </span>
+                    </td>
+                  </tr>
+                `).join('')}
+              </tbody>
+            </table>
+          </div>
+        ` : '<p class="text-gray-500 mb-6">Sin gastos fijos</p>'}
 
-        <h3 style="margin: 20px 0 10px; font-size: 16px;">Ultimas Transacciones</h3>
+        <h3 class="text-lg font-medium text-white mb-3">Ultimas Transacciones</h3>
         ${recentTransactions.length > 0 ? `
-          <table style="font-size: 14px;">
-            <tr><th>Fecha</th><th>Descripcion</th><th>Monto</th><th>Tipo</th></tr>
-            ${recentTransactions.slice(0, 5).map(t => `
-              <tr>
-                <td>${new Date(t.date).toLocaleDateString('es-CL')}</td>
-                <td>${t.category_emoji || ''} ${t.description || t.category_name}</td>
-                <td>$${parseFloat(t.amount).toLocaleString('es-CL')}</td>
-                <td>${t.is_income ? 'Ingreso' : 'Gasto'}</td>
-              </tr>
-            `).join('')}
-          </table>
-        ` : '<p style="color:#7f8c8d">Sin transacciones</p>'}
+          <div class="bg-sec/30 rounded-lg overflow-hidden">
+            <table class="w-full text-sm">
+              <thead>
+                <tr class="border-b border-border">
+                  <th class="px-4 py-2 text-left text-xs text-gray-500 uppercase">Fecha</th>
+                  <th class="px-4 py-2 text-left text-xs text-gray-500 uppercase">Descripcion</th>
+                  <th class="px-4 py-2 text-left text-xs text-gray-500 uppercase">Monto</th>
+                  <th class="px-4 py-2 text-left text-xs text-gray-500 uppercase">Tipo</th>
+                </tr>
+              </thead>
+              <tbody class="divide-y divide-border/50">
+                ${recentTransactions.slice(0, 5).map(t => `
+                  <tr>
+                    <td class="px-4 py-2 text-gray-300">${new Date(t.date).toLocaleDateString('es-CL')}</td>
+                    <td class="px-4 py-2 text-gray-300">${t.category_emoji || ''} ${t.description || t.category_name}</td>
+                    <td class="px-4 py-2 text-gray-300">$${parseFloat(t.amount).toLocaleString('es-CL')}</td>
+                    <td class="px-4 py-2">
+                      <span class="px-2 py-0.5 rounded text-xs ${t.is_income ? 'bg-green-500/10 text-green-400' : 'bg-red-500/10 text-red-400'}">
+                        ${t.is_income ? 'Ingreso' : 'Gasto'}
+                      </span>
+                    </td>
+                  </tr>
+                `).join('')}
+              </tbody>
+            </table>
+          </div>
+        ` : '<p class="text-gray-500">Sin transacciones</p>'}
       `;
     }
 
@@ -489,109 +536,110 @@
         renderCosts(data);
       } catch (err) {
         console.error('Costs error:', err);
-        document.getElementById('costsGrid').innerHTML = '<p>Error cargando costos</p>';
+        document.getElementById('costsGrid').innerHTML = '<p class="text-red-400">Error cargando costos</p>';
       }
     }
 
     function renderCosts(data) {
       const grid = document.getElementById('costsGrid');
 
-      // Helper para formatear tokens
-      const formatTokens = (tokens) => {
-        if (tokens >= 1000000) return (tokens / 1000000).toFixed(2) + 'M';
-        if (tokens >= 1000) return (tokens / 1000).toFixed(1) + 'K';
-        return tokens;
-      };
-
       grid.innerHTML = `
-        <div class="cost-card">
-          <h3>Claude API (Anthropic)</h3>
-          ${data.anthropic.error ? `<p style="color:#e74c3c">${data.anthropic.error}</p>` : `
-            <div class="cost-item">
-              <span>Periodo</span>
-              <span>${data.anthropic.period?.start || '-'} a ${data.anthropic.period?.end || '-'}</span>
+        <div class="bg-card rounded-xl p-6 border border-border">
+          <div class="flex items-center gap-3 mb-4 pb-4 border-b border-border">
+            <div class="w-10 h-10 bg-orange-500/10 rounded-lg flex items-center justify-center">
+              <svg class="w-5 h-5 text-orange-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9.75 17L9 20l-1 1h8l-1-1-.75-3M3 13h18M5 17h14a2 2 0 002-2V5a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z"></path></svg>
             </div>
-            <div class="cost-item">
-              <span>Tokens Input</span>
-              <span>${formatTokens(data.anthropic.summary?.totalInputTokens || 0)}</span>
-            </div>
-            <div class="cost-item">
-              <span>Tokens Output</span>
-              <span>${formatTokens(data.anthropic.summary?.totalOutputTokens || 0)}</span>
-            </div>
-            <div class="cost-item" style="font-weight: bold; border-top: 1px solid #eee; padding-top: 8px; margin-top: 8px;">
-              <span>Costo Estimado</span>
-              <span>$${(data.anthropic.summary?.totalCost || 0).toFixed(2)} USD</span>
+            <h3 class="text-lg font-medium text-white">Claude API (Anthropic)</h3>
+          </div>
+          ${data.anthropic.error ? `<p class="text-red-400">${data.anthropic.error}</p>` : `
+            <div class="space-y-3">
+              <div class="flex justify-between text-sm">
+                <span class="text-gray-400">Periodo</span>
+                <span class="text-gray-300">${data.anthropic.period?.start || '-'} a ${data.anthropic.period?.end || '-'}</span>
+              </div>
+              <div class="flex justify-between text-sm">
+                <span class="text-gray-400">Modelo</span>
+                <span class="text-gray-300">${data.anthropic.summary?.model || 'Haiku'}</span>
+              </div>
+              <div class="flex justify-between text-sm">
+                <span class="text-gray-400">Costo Input</span>
+                <span class="text-gray-300">$${(data.anthropic.summary?.inputCost || 0).toFixed(4)} USD</span>
+              </div>
+              <div class="flex justify-between text-sm">
+                <span class="text-gray-400">Costo Output</span>
+                <span class="text-gray-300">$${(data.anthropic.summary?.outputCost || 0).toFixed(4)} USD</span>
+              </div>
+              <div class="flex justify-between pt-3 mt-3 border-t border-border">
+                <span class="font-medium text-white">Costo Total</span>
+                <span class="font-bold text-accent">$${(data.anthropic.summary?.totalCost || 0).toFixed(2)} USD</span>
+              </div>
             </div>
           `}
         </div>
 
-        <div class="cost-card">
-          <h3>Twilio (WhatsApp/SMS)</h3>
-          ${data.twilio.error ? `<p style="color:#e74c3c">${data.twilio.error}</p>` : `
-            <div class="cost-item">
-              <span>Periodo</span>
-              <span>${data.twilio.period?.start || '-'} a ${data.twilio.period?.end || '-'}</span>
+        <div class="bg-card rounded-xl p-6 border border-border">
+          <div class="flex items-center gap-3 mb-4 pb-4 border-b border-border">
+            <div class="w-10 h-10 bg-red-500/10 rounded-lg flex items-center justify-center">
+              <svg class="w-5 h-5 text-red-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z"></path></svg>
             </div>
-            <div class="cost-item">
-              <span>Total Mensajes</span>
-              <span>${data.twilio.summary?.totalMessages || 0}</span>
-            </div>
-            <div class="cost-item" style="font-weight: bold; border-top: 1px solid #eee; padding-top: 8px; margin-top: 8px;">
-              <span>Costo Total</span>
-              <span>$${(data.twilio.summary?.totalCost || 0).toFixed(2)} USD</span>
+            <h3 class="text-lg font-medium text-white">Twilio (WhatsApp)</h3>
+          </div>
+          ${data.twilio.error ? `<p class="text-red-400">${data.twilio.error}</p>` : `
+            <div class="space-y-3">
+              <div class="flex justify-between text-sm">
+                <span class="text-gray-400">Periodo</span>
+                <span class="text-gray-300">${data.twilio.period?.start || '-'} a ${data.twilio.period?.end || '-'}</span>
+              </div>
+              <div class="flex justify-between pt-3 mt-3 border-t border-border">
+                <span class="font-medium text-white">Costo Total</span>
+                <span class="font-bold text-accent">$${(data.twilio.summary?.totalCost || 0).toFixed(2)} USD</span>
+              </div>
             </div>
           `}
         </div>
 
-        <div class="cost-card">
-          <h3>Railway (Hosting)</h3>
-          ${data.railway.error ? `<p style="color:#e74c3c">${data.railway.error}</p>` : `
-            <div class="cost-item">
-              <span>Proyecto</span>
-              <span>${data.railway.project?.name || '-'}</span>
+        <div class="bg-card rounded-xl p-6 border border-border">
+          <div class="flex items-center gap-3 mb-4 pb-4 border-b border-border">
+            <div class="w-10 h-10 bg-purple-500/10 rounded-lg flex items-center justify-center">
+              <svg class="w-5 h-5 text-purple-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 12h14M5 12a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v4a2 2 0 01-2 2M5 12a2 2 0 00-2 2v4a2 2 0 002 2h14a2 2 0 002-2v-4a2 2 0 00-2-2m-2-4h.01M17 16h.01"></path></svg>
             </div>
-            <div class="cost-item">
-              <span>Servicios</span>
-              <span>${data.railway.project?.services?.edges?.length || 0}</span>
+            <h3 class="text-lg font-medium text-white">Railway (Hosting)</h3>
+          </div>
+          ${data.railway.error ? `<p class="text-red-400">${data.railway.error}</p>` : `
+            <div class="space-y-3">
+              <div class="flex justify-between text-sm">
+                <span class="text-gray-400">Proyecto</span>
+                <span class="text-gray-300">${data.railway.project?.name || '-'}</span>
+              </div>
+              <div class="flex justify-between text-sm">
+                <span class="text-gray-400">Servicios</span>
+                <span class="text-gray-300">${data.railway.project?.services?.edges?.length || 0}</span>
+              </div>
+              <p class="text-xs text-gray-500 pt-3 mt-3 border-t border-border">${data.railway.note || 'Ver dashboard.railway.app para costos detallados'}</p>
             </div>
-            ${data.railway.account?.creditBalance !== undefined ? `
-              <div class="cost-item">
-                <span>Crédito Disponible</span>
-                <span>$${(data.railway.account.creditBalance / 100).toFixed(2)} USD</span>
-              </div>
-            ` : ''}
-            ${data.railway.account?.usageLimit !== undefined && data.railway.account.usageLimit > 0 ? `
-              <div class="cost-item">
-                <span>Límite de Uso</span>
-                <span>$${(data.railway.account.usageLimit / 100).toFixed(2)} USD</span>
-              </div>
-            ` : ''}
-            ${data.railway.account?.billingPeriodEnd ? `
-              <div class="cost-item">
-                <span>Fin Periodo</span>
-                <span>${new Date(data.railway.account.billingPeriodEnd).toLocaleDateString('es-CL')}</span>
-              </div>
-            ` : ''}
-            <p style="color:#7f8c8d; font-size: 12px; margin-top: 10px;">${data.railway.note || ''}</p>
           `}
         </div>
       `;
     }
 
     // Navigation
-    document.querySelectorAll('.sidebar nav a').forEach(link => {
+    document.querySelectorAll('.nav-link').forEach(link => {
       link.addEventListener('click', (e) => {
         e.preventDefault();
-        const section = e.target.dataset.section;
+        const section = e.currentTarget.dataset.section;
 
         // Update active nav
-        document.querySelectorAll('.sidebar nav a').forEach(a => a.classList.remove('active'));
-        e.target.classList.add('active');
+        document.querySelectorAll('.nav-link').forEach(a => a.classList.remove('active'));
+        e.currentTarget.classList.add('active');
 
         // Show section
-        document.querySelectorAll('.section').forEach(s => s.classList.remove('active'));
-        document.getElementById(section).classList.add('active');
+        document.querySelectorAll('.section').forEach(s => {
+          s.classList.add('hidden');
+          s.classList.remove('active');
+        });
+        const sectionEl = document.getElementById(section);
+        sectionEl.classList.remove('hidden');
+        sectionEl.classList.add('active');
 
         // Load data
         if (section === 'overview') loadDashboard();
