@@ -496,17 +496,32 @@
     function renderCosts(data) {
       const grid = document.getElementById('costsGrid');
 
+      // Helper para formatear tokens
+      const formatTokens = (tokens) => {
+        if (tokens >= 1000000) return (tokens / 1000000).toFixed(2) + 'M';
+        if (tokens >= 1000) return (tokens / 1000).toFixed(1) + 'K';
+        return tokens;
+      };
+
       grid.innerHTML = `
         <div class="cost-card">
           <h3>Claude API (Anthropic)</h3>
           ${data.anthropic.error ? `<p style="color:#e74c3c">${data.anthropic.error}</p>` : `
             <div class="cost-item">
               <span>Periodo</span>
-              <span>${data.anthropic.period?.start?.split('T')[0] || '-'} a ${data.anthropic.period?.end?.split('T')[0] || '-'}</span>
+              <span>${data.anthropic.period?.start || '-'} a ${data.anthropic.period?.end || '-'}</span>
             </div>
             <div class="cost-item">
-              <span>Datos</span>
-              <span>${JSON.stringify(data.anthropic.data?.data?.length || 0)} registros</span>
+              <span>Tokens Input</span>
+              <span>${formatTokens(data.anthropic.summary?.totalInputTokens || 0)}</span>
+            </div>
+            <div class="cost-item">
+              <span>Tokens Output</span>
+              <span>${formatTokens(data.anthropic.summary?.totalOutputTokens || 0)}</span>
+            </div>
+            <div class="cost-item" style="font-weight: bold; border-top: 1px solid #eee; padding-top: 8px; margin-top: 8px;">
+              <span>Costo Estimado</span>
+              <span>$${(data.anthropic.summary?.totalCost || 0).toFixed(2)} USD</span>
             </div>
           `}
         </div>
@@ -522,7 +537,7 @@
               <span>Total Mensajes</span>
               <span>${data.twilio.summary?.totalMessages || 0}</span>
             </div>
-            <div class="cost-item">
+            <div class="cost-item" style="font-weight: bold; border-top: 1px solid #eee; padding-top: 8px; margin-top: 8px;">
               <span>Costo Total</span>
               <span>$${(data.twilio.summary?.totalCost || 0).toFixed(2)} USD</span>
             </div>

@@ -4151,9 +4151,52 @@ app.get('/api/admin/costs/anthropic', authenticateAdmin, async (req, res) => {
       }
     });
 
+    // Precios por millón de tokens (USD) - Claude 3.5 Haiku
+    const pricing = {
+      'claude-3-5-haiku-20241022': { input: 1.00, output: 5.00 },
+      'claude-3-haiku-20240307': { input: 0.25, output: 1.25 },
+      'claude-3-5-sonnet-20241022': { input: 3.00, output: 15.00 },
+      'default': { input: 1.00, output: 5.00 }
+    };
+
+    // Calcular costos desde los datos de uso
+    const buckets = response.data?.data || [];
+    let totalInputTokens = 0;
+    let totalOutputTokens = 0;
+    let totalCost = 0;
+    const byModel = {};
+
+    buckets.forEach(bucket => {
+      const model = bucket.model || 'default';
+      const inputTokens = bucket.input_tokens || 0;
+      const outputTokens = bucket.output_tokens || 0;
+
+      const modelPricing = pricing[model] || pricing['default'];
+      const inputCost = (inputTokens / 1000000) * modelPricing.input;
+      const outputCost = (outputTokens / 1000000) * modelPricing.output;
+      const bucketCost = inputCost + outputCost;
+
+      totalInputTokens += inputTokens;
+      totalOutputTokens += outputTokens;
+      totalCost += bucketCost;
+
+      if (!byModel[model]) {
+        byModel[model] = { inputTokens: 0, outputTokens: 0, cost: 0 };
+      }
+      byModel[model].inputTokens += inputTokens;
+      byModel[model].outputTokens += outputTokens;
+      byModel[model].cost += bucketCost;
+    });
+
     res.json({
-      period: { start: start.toISOString(), end: end.toISOString() },
-      data: response.data
+      period: { start: start.toISOString().split('T')[0], end: end.toISOString().split('T')[0] },
+      summary: {
+        totalInputTokens,
+        totalOutputTokens,
+        totalCost: Math.round(totalCost * 100) / 100,
+        byModel
+      },
+      rawBuckets: buckets.length
     });
   } catch (error) {
     console.error('⚠️ ADMIN: Anthropic costs error:', error.response?.data || error.message);
@@ -4181,7 +4224,8 @@ app.get('/api/admin/costs/twilio', authenticateAdmin, async (req, res) => {
     const start = startDate || defaultStart.toISOString().split('T')[0];
     const end = endDate || defaultEnd.toISOString().split('T')[0];
 
-    const url = `https://api.twilio.com/2010-04-01/Accounts/${accountSid}/Usage/Records.json?StartDate=${start}&EndDate=${end}&Category=sms`;
+    // Consultar todas las categorías (sin filtro) para capturar WhatsApp y SMS
+    const url = `https://api.twilio.com/2010-04-01/Accounts/${accountSid}/Usage/Records.json?StartDate=${start}&EndDate=${end}`;
 
     const response = await axios.get(url, {
       auth: {
@@ -4190,7 +4234,14 @@ app.get('/api/admin/costs/twilio', authenticateAdmin, async (req, res) => {
       }
     });
 
-    // Filtrar solo WhatsApp/SMS relevantes
+    // Filtrar categorías relevantes para mensajería
+    const messagingCategories = [
+      'sms', 'sms-inbound', 'sms-outbound',
+      'mms', 'mms-inbound', 'mms-outbound',
+      'conversations', 'conversations-user-initiated', 'conversations-business-initiated',
+      'whatsapp', 'whatsapp-inbound', 'whatsapp-outbound'
+    ];
+
     const records = response.data.usage_records || [];
     const summary = {
       totalCost: 0,
@@ -4199,22 +4250,33 @@ app.get('/api/admin/costs/twilio', authenticateAdmin, async (req, res) => {
     };
 
     records.forEach(record => {
-      const cost = parseFloat(record.price || 0);
-      const count = parseInt(record.count || 0);
-      summary.totalCost += cost;
-      summary.totalMessages += count;
+      // Solo incluir categorías de mensajería
+      const category = record.category || '';
+      const isMessaging = messagingCategories.some(cat =>
+        category.toLowerCase().includes(cat.toLowerCase())
+      );
 
-      if (!summary.byCategory[record.category]) {
-        summary.byCategory[record.category] = { cost: 0, count: 0 };
+      if (isMessaging) {
+        const cost = parseFloat(record.price || 0);
+        const count = parseInt(record.count || 0);
+        summary.totalCost += cost;
+        summary.totalMessages += count;
+
+        if (!summary.byCategory[category]) {
+          summary.byCategory[category] = { cost: 0, count: 0, description: record.description || '' };
+        }
+        summary.byCategory[category].cost += cost;
+        summary.byCategory[category].count += count;
       }
-      summary.byCategory[record.category].cost += cost;
-      summary.byCategory[record.category].count += count;
     });
 
     res.json({
       period: { start, end },
-      summary,
-      records
+      summary: {
+        totalCost: Math.round(summary.totalCost * 100) / 100,
+        totalMessages: summary.totalMessages,
+        byCategory: summary.byCategory
+      }
     });
   } catch (error) {
     console.error('⚠️ ADMIN: Twilio costs error:', error.response?.data || error.message);
