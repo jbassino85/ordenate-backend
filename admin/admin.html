@@ -1,0 +1,593 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Ordenate Admin</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #f5f7fa; color: #333; }
+
+    /* Login */
+    .login-container { display: flex; justify-content: center; align-items: center; min-height: 100vh; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); }
+    .login-box { background: white; padding: 40px; border-radius: 12px; box-shadow: 0 10px 40px rgba(0,0,0,0.2); width: 100%; max-width: 400px; }
+    .login-box h1 { text-align: center; margin-bottom: 30px; color: #333; }
+    .login-box input { width: 100%; padding: 12px 16px; margin-bottom: 16px; border: 1px solid #ddd; border-radius: 8px; font-size: 16px; }
+    .login-box button { width: 100%; padding: 14px; background: #667eea; color: white; border: none; border-radius: 8px; font-size: 16px; cursor: pointer; transition: background 0.3s; }
+    .login-box button:hover { background: #5a6fd6; }
+    .login-error { color: #e74c3c; text-align: center; margin-bottom: 16px; display: none; }
+
+    /* Dashboard Layout */
+    .dashboard { display: none; }
+    .sidebar { position: fixed; left: 0; top: 0; width: 220px; height: 100vh; background: #2c3e50; color: white; padding: 20px 0; }
+    .sidebar h2 { padding: 0 20px 20px; border-bottom: 1px solid #34495e; font-size: 18px; }
+    .sidebar nav { margin-top: 20px; }
+    .sidebar nav a { display: block; padding: 12px 20px; color: #bdc3c7; text-decoration: none; transition: all 0.3s; }
+    .sidebar nav a:hover, .sidebar nav a.active { background: #34495e; color: white; border-left: 3px solid #667eea; }
+    .sidebar .logout { position: absolute; bottom: 20px; left: 20px; right: 20px; }
+    .sidebar .logout button { width: 100%; padding: 10px; background: #e74c3c; color: white; border: none; border-radius: 6px; cursor: pointer; }
+
+    .main-content { margin-left: 220px; padding: 30px; min-height: 100vh; }
+    .page-header { margin-bottom: 30px; }
+    .page-header h1 { font-size: 28px; color: #2c3e50; }
+
+    /* KPI Cards */
+    .kpi-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 20px; margin-bottom: 30px; }
+    .kpi-card { background: white; padding: 24px; border-radius: 12px; box-shadow: 0 2px 10px rgba(0,0,0,0.08); }
+    .kpi-card h3 { font-size: 14px; color: #7f8c8d; margin-bottom: 8px; text-transform: uppercase; }
+    .kpi-card .value { font-size: 32px; font-weight: 700; color: #2c3e50; }
+    .kpi-card .sub { font-size: 13px; color: #95a5a6; margin-top: 8px; }
+    .kpi-card.highlight { background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); }
+    .kpi-card.highlight h3, .kpi-card.highlight .value, .kpi-card.highlight .sub { color: white; }
+
+    /* Tables */
+    .table-container { background: white; border-radius: 12px; box-shadow: 0 2px 10px rgba(0,0,0,0.08); overflow: hidden; }
+    .table-header { padding: 20px; border-bottom: 1px solid #eee; display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 15px; }
+    .table-header h2 { font-size: 18px; color: #2c3e50; }
+    .filters { display: flex; gap: 10px; flex-wrap: wrap; }
+    .filters input, .filters select { padding: 8px 12px; border: 1px solid #ddd; border-radius: 6px; font-size: 14px; }
+    .filters input { width: 200px; }
+    table { width: 100%; border-collapse: collapse; }
+    th, td { padding: 14px 20px; text-align: left; border-bottom: 1px solid #eee; }
+    th { background: #f8f9fa; font-weight: 600; color: #7f8c8d; font-size: 13px; text-transform: uppercase; }
+    tr:hover { background: #f8f9fa; }
+    .badge { padding: 4px 10px; border-radius: 20px; font-size: 12px; font-weight: 500; }
+    .badge-free { background: #e8f5e9; color: #2e7d32; }
+    .badge-premium { background: #fff3e0; color: #ef6c00; }
+    .btn-view { padding: 6px 12px; background: #667eea; color: white; border: none; border-radius: 6px; cursor: pointer; font-size: 13px; }
+    .btn-view:hover { background: #5a6fd6; }
+
+    /* Pagination */
+    .pagination { padding: 20px; display: flex; justify-content: center; gap: 8px; }
+    .pagination button { padding: 8px 14px; border: 1px solid #ddd; background: white; border-radius: 6px; cursor: pointer; }
+    .pagination button.active { background: #667eea; color: white; border-color: #667eea; }
+    .pagination button:disabled { opacity: 0.5; cursor: not-allowed; }
+
+    /* Modal */
+    .modal { display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.5); z-index: 1000; justify-content: center; align-items: center; }
+    .modal.active { display: flex; }
+    .modal-content { background: white; border-radius: 12px; width: 90%; max-width: 800px; max-height: 90vh; overflow-y: auto; }
+    .modal-header { padding: 20px; border-bottom: 1px solid #eee; display: flex; justify-content: space-between; align-items: center; }
+    .modal-header h2 { font-size: 20px; }
+    .modal-close { background: none; border: none; font-size: 24px; cursor: pointer; color: #7f8c8d; }
+    .modal-body { padding: 20px; }
+    .user-info-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 20px; margin-bottom: 20px; }
+    .user-info-item { }
+    .user-info-item label { font-size: 12px; color: #7f8c8d; text-transform: uppercase; }
+    .user-info-item p { font-size: 16px; color: #2c3e50; margin-top: 4px; }
+
+    /* Costs Section */
+    .costs-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 20px; }
+    .cost-card { background: white; border-radius: 12px; box-shadow: 0 2px 10px rgba(0,0,0,0.08); padding: 24px; }
+    .cost-card h3 { font-size: 16px; color: #2c3e50; margin-bottom: 16px; padding-bottom: 12px; border-bottom: 1px solid #eee; }
+    .cost-item { display: flex; justify-content: space-between; padding: 8px 0; border-bottom: 1px solid #f5f5f5; }
+    .cost-item:last-child { border-bottom: none; }
+
+    /* Sections */
+    .section { display: none; }
+    .section.active { display: block; }
+
+    /* Loading */
+    .loading { text-align: center; padding: 40px; color: #7f8c8d; }
+
+    /* Responsive */
+    @media (max-width: 768px) {
+      .sidebar { width: 100%; height: auto; position: relative; }
+      .main-content { margin-left: 0; }
+      .user-info-grid { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body>
+  <!-- Login -->
+  <div class="login-container" id="loginPage">
+    <div class="login-box">
+      <h1>Ordenate Admin</h1>
+      <div class="login-error" id="loginError">Credenciales incorrectas</div>
+      <input type="text" id="username" placeholder="Usuario" autocomplete="username">
+      <input type="password" id="password" placeholder="Password" autocomplete="current-password">
+      <button onclick="login()">Ingresar</button>
+    </div>
+  </div>
+
+  <!-- Dashboard -->
+  <div class="dashboard" id="dashboard">
+    <aside class="sidebar">
+      <h2>Ordenate Admin</h2>
+      <nav>
+        <a href="#" class="active" data-section="overview">Dashboard</a>
+        <a href="#" data-section="users">Usuarios</a>
+        <a href="#" data-section="costs">Costos</a>
+      </nav>
+      <div class="logout">
+        <button onclick="logout()">Cerrar Sesion</button>
+      </div>
+    </aside>
+
+    <main class="main-content">
+      <!-- Overview Section -->
+      <div class="section active" id="overview">
+        <div class="page-header">
+          <h1>Dashboard</h1>
+        </div>
+        <div class="kpi-grid" id="kpiGrid">
+          <div class="loading">Cargando...</div>
+        </div>
+      </div>
+
+      <!-- Users Section -->
+      <div class="section" id="users">
+        <div class="page-header">
+          <h1>Usuarios</h1>
+        </div>
+        <div class="table-container">
+          <div class="table-header">
+            <h2>Lista de Usuarios</h2>
+            <div class="filters">
+              <input type="text" id="searchInput" placeholder="Buscar telefono o nombre...">
+              <select id="planFilter">
+                <option value="">Todos los planes</option>
+                <option value="free">Free</option>
+                <option value="premium">Premium</option>
+              </select>
+            </div>
+          </div>
+          <table>
+            <thead>
+              <tr>
+                <th>Usuario</th>
+                <th>Plan</th>
+                <th>Transacciones</th>
+                <th>Ultima Actividad</th>
+                <th>Registro</th>
+                <th></th>
+              </tr>
+            </thead>
+            <tbody id="usersTable">
+              <tr><td colspan="6" class="loading">Cargando...</td></tr>
+            </tbody>
+          </table>
+          <div class="pagination" id="pagination"></div>
+        </div>
+      </div>
+
+      <!-- Costs Section -->
+      <div class="section" id="costs">
+        <div class="page-header">
+          <h1>Costos Operativos</h1>
+        </div>
+        <div class="costs-grid" id="costsGrid">
+          <div class="loading">Cargando...</div>
+        </div>
+      </div>
+    </main>
+  </div>
+
+  <!-- User Detail Modal -->
+  <div class="modal" id="userModal">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h2>Detalle de Usuario</h2>
+        <button class="modal-close" onclick="closeModal()">&times;</button>
+      </div>
+      <div class="modal-body" id="userModalBody">
+        <div class="loading">Cargando...</div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    const API_BASE = 'https://api.ordenate.ai';
+    let authToken = localStorage.getItem('adminToken');
+    let currentPage = 1;
+
+    // Check auth on load
+    if (authToken) {
+      showDashboard();
+      loadDashboard();
+    }
+
+    // Login
+    async function login() {
+      const username = document.getElementById('username').value;
+      const password = document.getElementById('password').value;
+      const errorEl = document.getElementById('loginError');
+
+      try {
+        const res = await fetch(`${API_BASE}/api/admin/login`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ username, password })
+        });
+
+        const data = await res.json();
+
+        if (res.ok && data.token) {
+          authToken = data.token;
+          localStorage.setItem('adminToken', authToken);
+          errorEl.style.display = 'none';
+          showDashboard();
+          loadDashboard();
+        } else {
+          errorEl.style.display = 'block';
+        }
+      } catch (err) {
+        errorEl.textContent = 'Error de conexion';
+        errorEl.style.display = 'block';
+      }
+    }
+
+    function logout() {
+      localStorage.removeItem('adminToken');
+      authToken = null;
+      document.getElementById('loginPage').style.display = 'flex';
+      document.getElementById('dashboard').style.display = 'none';
+    }
+
+    function showDashboard() {
+      document.getElementById('loginPage').style.display = 'none';
+      document.getElementById('dashboard').style.display = 'block';
+    }
+
+    // API calls
+    async function apiCall(endpoint) {
+      const res = await fetch(`${API_BASE}${endpoint}`, {
+        headers: { 'Authorization': `Basic ${authToken}` }
+      });
+      if (res.status === 401) {
+        logout();
+        throw new Error('Unauthorized');
+      }
+      return res.json();
+    }
+
+    // Load Dashboard
+    async function loadDashboard() {
+      try {
+        const data = await apiCall('/api/admin/dashboard');
+        renderKPIs(data);
+      } catch (err) {
+        console.error('Dashboard error:', err);
+      }
+    }
+
+    function renderKPIs(data) {
+      const grid = document.getElementById('kpiGrid');
+      grid.innerHTML = `
+        <div class="kpi-card highlight">
+          <h3>Total Usuarios</h3>
+          <div class="value">${data.users.total}</div>
+          <div class="sub">+${data.users.thisMonth} este mes</div>
+        </div>
+        <div class="kpi-card">
+          <h3>Usuarios Activos (MAU)</h3>
+          <div class="value">${data.activity.mau}</div>
+          <div class="sub">DAU: ${data.activity.dau} | WAU: ${data.activity.wau}</div>
+        </div>
+        <div class="kpi-card">
+          <h3>Transacciones</h3>
+          <div class="value">${data.transactions.total.toLocaleString()}</div>
+          <div class="sub">${data.transactions.thisMonth.toLocaleString()} este mes</div>
+        </div>
+        <div class="kpi-card">
+          <h3>Promedio Tx/Usuario</h3>
+          <div class="value">${data.transactions.avgPerUser}</div>
+          <div class="sub">Por usuario activo</div>
+        </div>
+        <div class="kpi-card">
+          <h3>Total Gastos Registrados</h3>
+          <div class="value">$${(data.transactions.totalExpenses / 1000000).toFixed(1)}M</div>
+          <div class="sub">Ingresos: $${(data.transactions.totalIncome / 1000000).toFixed(1)}M</div>
+        </div>
+        <div class="kpi-card">
+          <h3>Usuarios con Gastos Fijos</h3>
+          <div class="value">${data.fixedExpenses.usersWithFixed}</div>
+          <div class="sub">${data.fixedExpenses.totalFixed} gastos fijos totales</div>
+        </div>
+        <div class="kpi-card">
+          <h3>Plan Free</h3>
+          <div class="value">${data.users.byPlan.free || 0}</div>
+          <div class="sub">${((data.users.byPlan.free || 0) / data.users.total * 100).toFixed(1)}% del total</div>
+        </div>
+        <div class="kpi-card">
+          <h3>Plan Premium</h3>
+          <div class="value">${data.users.byPlan.premium || 0}</div>
+          <div class="sub">${((data.users.byPlan.premium || 0) / data.users.total * 100).toFixed(1)}% del total</div>
+        </div>
+      `;
+    }
+
+    // Load Users
+    async function loadUsers(page = 1) {
+      currentPage = page;
+      const search = document.getElementById('searchInput').value;
+      const plan = document.getElementById('planFilter').value;
+
+      let url = `/api/admin/users?page=${page}&limit=15`;
+      if (search) url += `&search=${encodeURIComponent(search)}`;
+      if (plan) url += `&plan=${plan}`;
+
+      try {
+        const data = await apiCall(url);
+        renderUsers(data);
+      } catch (err) {
+        console.error('Users error:', err);
+      }
+    }
+
+    function renderUsers(data) {
+      const tbody = document.getElementById('usersTable');
+      const pagination = document.getElementById('pagination');
+
+      if (data.users.length === 0) {
+        tbody.innerHTML = '<tr><td colspan="6" class="loading">No se encontraron usuarios</td></tr>';
+        pagination.innerHTML = '';
+        return;
+      }
+
+      tbody.innerHTML = data.users.map(u => `
+        <tr>
+          <td>
+            <strong>${u.name || 'Sin nombre'}</strong><br>
+            <small style="color:#7f8c8d">${u.phone}</small>
+          </td>
+          <td><span class="badge badge-${u.plan}">${u.plan}</span></td>
+          <td>${u.transactionCount}</td>
+          <td>${u.lastInteraction ? new Date(u.lastInteraction).toLocaleDateString('es-CL') : '-'}</td>
+          <td>${new Date(u.createdAt).toLocaleDateString('es-CL')}</td>
+          <td><button class="btn-view" onclick="viewUser(${u.id})">Ver</button></td>
+        </tr>
+      `).join('');
+
+      // Pagination
+      const { page, totalPages } = data.pagination;
+      let paginationHTML = '';
+
+      paginationHTML += `<button ${page === 1 ? 'disabled' : ''} onclick="loadUsers(${page - 1})">Anterior</button>`;
+
+      for (let i = 1; i <= totalPages && i <= 5; i++) {
+        paginationHTML += `<button class="${i === page ? 'active' : ''}" onclick="loadUsers(${i})">${i}</button>`;
+      }
+
+      paginationHTML += `<button ${page === totalPages ? 'disabled' : ''} onclick="loadUsers(${page + 1})">Siguiente</button>`;
+
+      pagination.innerHTML = paginationHTML;
+    }
+
+    // View User Detail
+    async function viewUser(id) {
+      document.getElementById('userModal').classList.add('active');
+      document.getElementById('userModalBody').innerHTML = '<div class="loading">Cargando...</div>';
+
+      try {
+        const data = await apiCall(`/api/admin/users/${id}`);
+        renderUserDetail(data);
+      } catch (err) {
+        document.getElementById('userModalBody').innerHTML = '<p>Error cargando usuario</p>';
+      }
+    }
+
+    function renderUserDetail(data) {
+      const { user, stats, recentTransactions, fixedExpenses } = data;
+
+      document.getElementById('userModalBody').innerHTML = `
+        <div class="user-info-grid">
+          <div class="user-info-item">
+            <label>Nombre</label>
+            <p>${user.name || 'Sin nombre'}</p>
+          </div>
+          <div class="user-info-item">
+            <label>Telefono</label>
+            <p>${user.phone}</p>
+          </div>
+          <div class="user-info-item">
+            <label>Plan</label>
+            <p><span class="badge badge-${user.plan}">${user.plan}</span></p>
+          </div>
+          <div class="user-info-item">
+            <label>Ingreso Mensual</label>
+            <p>$${user.monthlyIncome ? user.monthlyIncome.toLocaleString('es-CL') : '-'}</p>
+          </div>
+          <div class="user-info-item">
+            <label>Meta de Ahorro</label>
+            <p>$${user.savingsGoal ? user.savingsGoal.toLocaleString('es-CL') : '-'}</p>
+          </div>
+          <div class="user-info-item">
+            <label>Registro</label>
+            <p>${new Date(user.createdAt).toLocaleDateString('es-CL')}</p>
+          </div>
+          <div class="user-info-item">
+            <label>Ultima Actividad</label>
+            <p>${user.lastInteraction ? new Date(user.lastInteraction).toLocaleString('es-CL') : '-'}</p>
+          </div>
+          <div class="user-info-item">
+            <label>Onboarding</label>
+            <p>${user.onboardingComplete ? 'Completado' : 'Paso ' + (user.onboardingStep || 1)}</p>
+          </div>
+        </div>
+
+        <h3 style="margin: 20px 0 10px; font-size: 16px;">Estadisticas</h3>
+        <div class="user-info-grid">
+          <div class="user-info-item">
+            <label>Total Transacciones</label>
+            <p>${stats.totalTransactions}</p>
+          </div>
+          <div class="user-info-item">
+            <label>Este Mes</label>
+            <p>${stats.transactionsThisMonth}</p>
+          </div>
+          <div class="user-info-item">
+            <label>Total Gastos</label>
+            <p>$${stats.totalExpenses.toLocaleString('es-CL')}</p>
+          </div>
+          <div class="user-info-item">
+            <label>Total Ingresos</label>
+            <p>$${stats.totalIncome.toLocaleString('es-CL')}</p>
+          </div>
+        </div>
+
+        <h3 style="margin: 20px 0 10px; font-size: 16px;">Gastos Fijos (${fixedExpenses.length})</h3>
+        ${fixedExpenses.length > 0 ? `
+          <table style="font-size: 14px;">
+            <tr><th>Descripcion</th><th>Monto</th><th>Dia</th><th>Estado</th></tr>
+            ${fixedExpenses.map(f => `
+              <tr>
+                <td>${f.category_emoji || ''} ${f.description}</td>
+                <td>$${parseFloat(f.typical_amount).toLocaleString('es-CL')}</td>
+                <td>${f.reminder_day || '-'}</td>
+                <td>${f.is_active ? 'Activo' : 'Pausado'}</td>
+              </tr>
+            `).join('')}
+          </table>
+        ` : '<p style="color:#7f8c8d">Sin gastos fijos</p>'}
+
+        <h3 style="margin: 20px 0 10px; font-size: 16px;">Ultimas Transacciones</h3>
+        ${recentTransactions.length > 0 ? `
+          <table style="font-size: 14px;">
+            <tr><th>Fecha</th><th>Descripcion</th><th>Monto</th><th>Tipo</th></tr>
+            ${recentTransactions.slice(0, 5).map(t => `
+              <tr>
+                <td>${new Date(t.date).toLocaleDateString('es-CL')}</td>
+                <td>${t.category_emoji || ''} ${t.description || t.category_name}</td>
+                <td>$${parseFloat(t.amount).toLocaleString('es-CL')}</td>
+                <td>${t.is_income ? 'Ingreso' : 'Gasto'}</td>
+              </tr>
+            `).join('')}
+          </table>
+        ` : '<p style="color:#7f8c8d">Sin transacciones</p>'}
+      `;
+    }
+
+    function closeModal() {
+      document.getElementById('userModal').classList.remove('active');
+    }
+
+    // Load Costs
+    async function loadCosts() {
+      try {
+        const data = await apiCall('/api/admin/costs/summary');
+        renderCosts(data);
+      } catch (err) {
+        console.error('Costs error:', err);
+        document.getElementById('costsGrid').innerHTML = '<p>Error cargando costos</p>';
+      }
+    }
+
+    function renderCosts(data) {
+      const grid = document.getElementById('costsGrid');
+
+      grid.innerHTML = `
+        <div class="cost-card">
+          <h3>Claude API (Anthropic)</h3>
+          ${data.anthropic.error ? `<p style="color:#e74c3c">${data.anthropic.error}</p>` : `
+            <div class="cost-item">
+              <span>Periodo</span>
+              <span>${data.anthropic.period?.start?.split('T')[0] || '-'} a ${data.anthropic.period?.end?.split('T')[0] || '-'}</span>
+            </div>
+            <div class="cost-item">
+              <span>Datos</span>
+              <span>${JSON.stringify(data.anthropic.data?.data?.length || 0)} registros</span>
+            </div>
+          `}
+        </div>
+
+        <div class="cost-card">
+          <h3>Twilio (WhatsApp/SMS)</h3>
+          ${data.twilio.error ? `<p style="color:#e74c3c">${data.twilio.error}</p>` : `
+            <div class="cost-item">
+              <span>Periodo</span>
+              <span>${data.twilio.period?.start || '-'} a ${data.twilio.period?.end || '-'}</span>
+            </div>
+            <div class="cost-item">
+              <span>Total Mensajes</span>
+              <span>${data.twilio.summary?.totalMessages || 0}</span>
+            </div>
+            <div class="cost-item">
+              <span>Costo Total</span>
+              <span>$${(data.twilio.summary?.totalCost || 0).toFixed(2)} USD</span>
+            </div>
+          `}
+        </div>
+
+        <div class="cost-card">
+          <h3>Railway (Hosting)</h3>
+          ${data.railway.error ? `<p style="color:#e74c3c">${data.railway.error}</p>` : `
+            <div class="cost-item">
+              <span>Proyecto</span>
+              <span>${data.railway.project?.name || '-'}</span>
+            </div>
+            <div class="cost-item">
+              <span>Servicios</span>
+              <span>${data.railway.project?.services?.edges?.length || 0}</span>
+            </div>
+            <p style="color:#7f8c8d; font-size: 12px; margin-top: 10px;">${data.railway.note || ''}</p>
+          `}
+        </div>
+      `;
+    }
+
+    // Navigation
+    document.querySelectorAll('.sidebar nav a').forEach(link => {
+      link.addEventListener('click', (e) => {
+        e.preventDefault();
+        const section = e.target.dataset.section;
+
+        // Update active nav
+        document.querySelectorAll('.sidebar nav a').forEach(a => a.classList.remove('active'));
+        e.target.classList.add('active');
+
+        // Show section
+        document.querySelectorAll('.section').forEach(s => s.classList.remove('active'));
+        document.getElementById(section).classList.add('active');
+
+        // Load data
+        if (section === 'overview') loadDashboard();
+        if (section === 'users') loadUsers();
+        if (section === 'costs') loadCosts();
+      });
+    });
+
+    // Search/filter events
+    document.getElementById('searchInput').addEventListener('keyup', debounce(() => loadUsers(1), 500));
+    document.getElementById('planFilter').addEventListener('change', () => loadUsers(1));
+
+    function debounce(func, wait) {
+      let timeout;
+      return function(...args) {
+        clearTimeout(timeout);
+        timeout = setTimeout(() => func.apply(this, args), wait);
+      };
+    }
+
+    // Close modal on outside click
+    document.getElementById('userModal').addEventListener('click', (e) => {
+      if (e.target.id === 'userModal') closeModal();
+    });
+
+    // Enter key on login
+    document.getElementById('password').addEventListener('keyup', (e) => {
+      if (e.key === 'Enter') login();
+    });
+  </script>
+</body>
+</html>

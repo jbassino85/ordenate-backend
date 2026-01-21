@@ -8,8 +8,17 @@ const rateLimit = require('express-rate-limit');
 const helmet = require('helmet');
 const bcrypt = require('bcrypt');
 const axios = require('axios');
+const cors = require('cors');
 
 const app = express();
+
+// CORS - Permitir peticiones desde el frontend admin
+app.use(cors({
+  origin: ['https://ordenate.ai', 'https://www.ordenate.ai', 'http://localhost:3000'],
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization'],
+  credentials: true
+}));
 
 // ============================================
 // SEGURIDAD - CONFIGURACIÓN
