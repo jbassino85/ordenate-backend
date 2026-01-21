@@ -30,18 +30,22 @@ app.use(cors({
 app.set('trust proxy', 1);
 
 // Helmet: Headers de seguridad HTTP
-// Configuración para permitir scripts inline en admin dashboard
+// Configuración para permitir scripts inline en admin dashboard + Cloudflare
 app.use(helmet({
   contentSecurityPolicy: {
     directives: {
       defaultSrc: ["'self'"],
-      scriptSrc: ["'self'", "'unsafe-inline'"],
+      scriptSrc: ["'self'", "'unsafe-inline'", "https://static.cloudflareinsights.com"],
+      scriptSrcAttr: ["'unsafe-inline'"],
       styleSrc: ["'self'", "'unsafe-inline'"],
-      imgSrc: ["'self'", "data:"],
-      connectSrc: ["'self'"]
+      imgSrc: ["'self'", "data:", "https:"],
+      connectSrc: ["'self'", "https://cloudflareinsights.com"]
     }
   }
 }));
+
+// Favicon - evitar 404
+app.get('/favicon.ico', (req, res) => res.status(204).end());
 
 // Rate Limiting para proteger contra DDoS
 const webhookLimiter = rateLimit({
@@ -4135,7 +4139,7 @@ app.get('/api/admin/users/:id', authenticateAdmin, async (req, res) => {
 // ADMIN COSTS ENDPOINTS
 // ============================================
 
-// GET /api/admin/costs/anthropic - Uso de Claude API
+// GET /api/admin/costs/anthropic - Uso de Claude API (solo Haiku)
 app.get('/api/admin/costs/anthropic', authenticateAdmin, async (req, res) => {
   try {
     const { startDate, endDate } = req.query;
@@ -4153,11 +4157,12 @@ app.get('/api/admin/costs/anthropic', authenticateAdmin, async (req, res) => {
       return res.status(500).json({ error: 'ANTHROPIC_ADMIN_API_KEY not configured' });
     }
 
-    const url = new URL('https://api.anthropic.com/v1/organizations/usage_report/messages');
+    // Usar cost_report endpoint con group_by description para ver desglose
+    const url = new URL('https://api.anthropic.com/v1/organizations/cost_report');
     url.searchParams.append('starting_at', start.toISOString());
     url.searchParams.append('ending_at', end.toISOString());
     url.searchParams.append('bucket_width', '1d');
-    url.searchParams.append('group_by[]', 'model');
+    url.searchParams.append('group_by[]', 'description');
 
     const response = await axios.get(url.toString(), {
       headers: {
@@ -4166,51 +4171,52 @@ app.get('/api/admin/costs/anthropic', authenticateAdmin, async (req, res) => {
       }
     });
 
-    // Precios por millón de tokens (USD) - Claude 3.5 Haiku
-    const pricing = {
-      'claude-3-5-haiku-20241022': { input: 1.00, output: 5.00 },
-      'claude-3-haiku-20240307': { input: 0.25, output: 1.25 },
-      'claude-3-5-sonnet-20241022': { input: 3.00, output: 15.00 },
-      'default': { input: 1.00, output: 5.00 }
-    };
-
-    // Calcular costos desde los datos de uso
+    // Procesar buckets y filtrar SOLO modelo Haiku
     const buckets = response.data?.data || [];
-    let totalInputTokens = 0;
-    let totalOutputTokens = 0;
     let totalCost = 0;
-    const byModel = {};
+    let inputCost = 0;
+    let outputCost = 0;
+    const dailyCosts = [];
 
     buckets.forEach(bucket => {
-      const model = bucket.model || 'default';
-      const inputTokens = bucket.input_tokens || 0;
-      const outputTokens = bucket.output_tokens || 0;
+      const results = bucket.results || [];
+      let dayTotal = 0;
 
-      const modelPricing = pricing[model] || pricing['default'];
-      const inputCost = (inputTokens / 1000000) * modelPricing.input;
-      const outputCost = (outputTokens / 1000000) * modelPricing.output;
-      const bucketCost = inputCost + outputCost;
+      results.forEach(result => {
+        // Solo contar costos de Haiku (ignorar Opus, Sonnet, Web Search, etc.)
+        const model = result.model || '';
+        if (model.includes('haiku')) {
+          const amount = parseFloat(result.amount || 0);
+          dayTotal += amount;
+          totalCost += amount;
 
-      totalInputTokens += inputTokens;
-      totalOutputTokens += outputTokens;
-      totalCost += bucketCost;
+          // Separar input vs output
+          const tokenType = result.token_type || '';
+          if (tokenType.includes('input')) {
+            inputCost += amount;
+          } else if (tokenType.includes('output')) {
+            outputCost += amount;
+          }
+        }
+      });
 
-      if (!byModel[model]) {
-        byModel[model] = { inputTokens: 0, outputTokens: 0, cost: 0 };
+      if (dayTotal > 0) {
+        dailyCosts.push({
+          date: bucket.starting_at?.split('T')[0],
+          cost: Math.round(dayTotal * 100) / 100
+        });
       }
-      byModel[model].inputTokens += inputTokens;
-      byModel[model].outputTokens += outputTokens;
-      byModel[model].cost += bucketCost;
     });
 
     res.json({
       period: { start: start.toISOString().split('T')[0], end: end.toISOString().split('T')[0] },
       summary: {
-        totalInputTokens,
-        totalOutputTokens,
         totalCost: Math.round(totalCost * 100) / 100,
-        byModel
+        inputCost: Math.round(inputCost * 100) / 100,
+        outputCost: Math.round(outputCost * 100) / 100,
+        model: 'claude-haiku-4-5 (filtered)'
       },
+      dailyCosts,
       rawBuckets: buckets.length
     });
   } catch (error) {
@@ -4219,11 +4225,9 @@ app.get('/api/admin/costs/anthropic', authenticateAdmin, async (req, res) => {
   }
 });
 
-// GET /api/admin/costs/twilio - Uso de Twilio
+// GET /api/admin/costs/twilio - Uso de Twilio (totalprice directo)
 app.get('/api/admin/costs/twilio', authenticateAdmin, async (req, res) => {
   try {
-    const { startDate, endDate } = req.query;
-
     const accountSid = process.env.TWILIO_ACCOUNT_SID;
     const authToken = process.env.TWILIO_AUTH_TOKEN;
 
@@ -4231,16 +4235,8 @@ app.get('/api/admin/costs/twilio', authenticateAdmin, async (req, res) => {
       return res.status(500).json({ error: 'Twilio credentials not configured' });
     }
 
-    // Defaults: último mes
-    const now = new Date();
-    const defaultStart = new Date(now.getFullYear(), now.getMonth(), 1);
-    const defaultEnd = new Date(now.getFullYear(), now.getMonth() + 1, 0);
-
-    const start = startDate || defaultStart.toISOString().split('T')[0];
-    const end = endDate || defaultEnd.toISOString().split('T')[0];
-
-    // Consultar todas las categorías (sin filtro) para capturar WhatsApp y SMS
-    const url = `https://api.twilio.com/2010-04-01/Accounts/${accountSid}/Usage/Records.json?StartDate=${start}&EndDate=${end}`;
+    // Usar ThisMonth con Category=totalprice para obtener el costo total directamente
+    const url = `https://api.twilio.com/2010-04-01/Accounts/${accountSid}/Usage/Records/ThisMonth.json?Category=totalprice`;
 
     const response = await axios.get(url, {
       auth: {
@@ -4249,49 +4245,21 @@ app.get('/api/admin/costs/twilio', authenticateAdmin, async (req, res) => {
       }
     });
 
-    // Filtrar categorías relevantes para mensajería
-    const messagingCategories = [
-      'sms', 'sms-inbound', 'sms-outbound',
-      'mms', 'mms-inbound', 'mms-outbound',
-      'conversations', 'conversations-user-initiated', 'conversations-business-initiated',
-      'whatsapp', 'whatsapp-inbound', 'whatsapp-outbound'
-    ];
-
     const records = response.data.usage_records || [];
-    const summary = {
-      totalCost: 0,
-      totalMessages: 0,
-      byCategory: {}
-    };
+    const totalPriceRecord = records.find(r => r.category === 'totalprice');
 
-    records.forEach(record => {
-      // Solo incluir categorías de mensajería
-      const category = record.category || '';
-      const isMessaging = messagingCategories.some(cat =>
-        category.toLowerCase().includes(cat.toLowerCase())
-      );
-
-      if (isMessaging) {
-        const cost = parseFloat(record.price || 0);
-        const count = parseInt(record.count || 0);
-        summary.totalCost += cost;
-        summary.totalMessages += count;
-
-        if (!summary.byCategory[category]) {
-          summary.byCategory[category] = { cost: 0, count: 0, description: record.description || '' };
-        }
-        summary.byCategory[category].cost += cost;
-        summary.byCategory[category].count += count;
-      }
-    });
+    const totalCost = totalPriceRecord ? parseFloat(totalPriceRecord.price || 0) : 0;
+    const startDate = totalPriceRecord?.start_date || '';
+    const endDate = totalPriceRecord?.end_date || '';
+    const asOf = totalPriceRecord?.as_of || '';
 
     res.json({
-      period: { start, end },
+      period: { start: startDate, end: endDate },
       summary: {
-        totalCost: Math.round(summary.totalCost * 100) / 100,
-        totalMessages: summary.totalMessages,
-        byCategory: summary.byCategory
-      }
+        totalCost: Math.round(totalCost * 100) / 100
+      },
+      asOf,
+      description: 'Total Price (all Twilio services)'
     });
   } catch (error) {
     console.error('⚠️ ADMIN: Twilio costs error:', error.response?.data || error.message);
@@ -4299,7 +4267,7 @@ app.get('/api/admin/costs/twilio', authenticateAdmin, async (req, res) => {
   }
 });
 
-// GET /api/admin/costs/railway - Uso de Railway
+// GET /api/admin/costs/railway - Uso de Railway (calculado desde usage)
 app.get('/api/admin/costs/railway', authenticateAdmin, async (req, res) => {
   try {
     const railwayToken = process.env.RAILWAY_API_TOKEN;
@@ -4309,12 +4277,26 @@ app.get('/api/admin/costs/railway', authenticateAdmin, async (req, res) => {
       return res.status(500).json({ error: 'Railway credentials not configured' });
     }
 
-    // Query para obtener info del proyecto y uso estimado de la cuenta
+    // Tarifas Railway (USD)
+    const PRICING = {
+      CPU_PER_VCPU_MINUTE: 0.000463,
+      MEMORY_PER_GB_MINUTE: 0.000231,
+      NETWORK_PER_GB: 0.10
+    };
+
+    // Query para obtener uso del proyecto con métricas detalladas
     const query = `
       query {
+        usage(projectId: "${projectId}", measurements: [CPU_USAGE, MEMORY_USAGE_GB, NETWORK_TX_GB]) {
+          measurement
+          value
+          tags {
+            projectId
+            serviceId
+          }
+        }
         project(id: "${projectId}") {
           name
-          createdAt
           services {
             edges {
               node {
@@ -4325,17 +4307,9 @@ app.get('/api/admin/costs/railway', authenticateAdmin, async (req, res) => {
           }
         }
         me {
-          name
-          email
           customer {
             billingPeriodEnd
-            usageLimit
             creditBalance
-          }
-          resourceAccess {
-            project {
-              projectId
-            }
           }
         }
       }
@@ -4352,18 +4326,71 @@ app.get('/api/admin/costs/railway', authenticateAdmin, async (req, res) => {
     );
 
     const data = response.data.data;
+    const usageData = data?.usage || [];
+
+    // Crear mapa de servicios por ID
+    const services = {};
+    (data?.project?.services?.edges || []).forEach(edge => {
+      if (edge.node) {
+        services[edge.node.id] = edge.node.name;
+      }
+    });
+
+    // Calcular costos por tipo de recurso
+    let cpuCost = 0;
+    let memoryCost = 0;
+    let networkCost = 0;
+    const byService = {};
+
+    usageData.forEach(item => {
+      const serviceId = item.tags?.serviceId || 'unknown';
+      const serviceName = services[serviceId] || serviceId;
+      const value = item.value || 0;
+
+      if (!byService[serviceName]) {
+        byService[serviceName] = { cpu: 0, memory: 0, network: 0, cost: 0 };
+      }
+
+      switch (item.measurement) {
+        case 'CPU_USAGE':
+          const cpu = value * PRICING.CPU_PER_VCPU_MINUTE;
+          cpuCost += cpu;
+          byService[serviceName].cpu += value;
+          byService[serviceName].cost += cpu;
+          break;
+        case 'MEMORY_USAGE_GB':
+          const mem = value * PRICING.MEMORY_PER_GB_MINUTE;
+          memoryCost += mem;
+          byService[serviceName].memory += value;
+          byService[serviceName].cost += mem;
+          break;
+        case 'NETWORK_TX_GB':
+          const net = value * PRICING.NETWORK_PER_GB;
+          networkCost += net;
+          byService[serviceName].network += value;
+          byService[serviceName].cost += net;
+          break;
+      }
+    });
+
+    const totalCost = cpuCost + memoryCost + networkCost;
     const customer = data?.me?.customer;
 
     res.json({
-      project: data?.project,
-      account: {
-        name: data?.me?.name,
-        email: data?.me?.email,
-        billingPeriodEnd: customer?.billingPeriodEnd,
-        usageLimit: customer?.usageLimit,
+      project: data?.project?.name,
+      period: {
+        note: 'Current billing period usage',
+        billingPeriodEnd: customer?.billingPeriodEnd
+      },
+      summary: {
+        totalCost: Math.round(totalCost * 100) / 100,
+        cpuCost: Math.round(cpuCost * 100) / 100,
+        memoryCost: Math.round(memoryCost * 100) / 100,
+        networkCost: Math.round(networkCost * 100) / 100,
         creditBalance: customer?.creditBalance
       },
-      note: 'Para costos detallados en tiempo real, revisar Railway Dashboard'
+      byService,
+      pricing: PRICING
     });
   } catch (error) {
     console.error('⚠️ ADMIN: Railway costs error:', error.response?.data || error.message);
