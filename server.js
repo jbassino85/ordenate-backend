@@ -30,7 +30,18 @@ app.use(cors({
 app.set('trust proxy', 1);
 
 // Helmet: Headers de seguridad HTTP
-app.use(helmet());
+// Configuración para permitir scripts inline en admin dashboard
+app.use(helmet({
+  contentSecurityPolicy: {
+    directives: {
+      defaultSrc: ["'self'"],
+      scriptSrc: ["'self'", "'unsafe-inline'"],
+      styleSrc: ["'self'", "'unsafe-inline'"],
+      imgSrc: ["'self'", "data:"],
+      connectSrc: ["'self'"]
+    }
+  }
+}));
 
 // Rate Limiting para proteger contra DDoS
 const webhookLimiter = rateLimit({
