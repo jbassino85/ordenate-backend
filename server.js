@@ -9,6 +9,7 @@ const helmet = require('helmet');
 const bcrypt = require('bcrypt');
 const axios = require('axios');
 const cors = require('cors');
+const path = require('path');
 
 const app = express();
 
@@ -50,6 +51,9 @@ const generalLimiter = rateLimit({
 
 app.use(bodyParser.urlencoded({ extended: false }));
 app.use(bodyParser.json());
+
+// Servir archivos estáticos del admin dashboard
+app.use('/admin', express.static(path.join(__dirname, 'admin')));
 
 // ============================================
 // CONFIGURACIÓN DE SERVICIOS
