@@ -4294,7 +4294,7 @@ app.get('/api/admin/costs/railway', authenticateAdmin, async (req, res) => {
       return res.status(500).json({ error: 'Railway credentials not configured' });
     }
 
-    // Query para obtener info del proyecto y uso estimado
+    // Query para obtener info del proyecto y uso estimado de la cuenta
     const query = `
       query {
         project(id: "${projectId}") {
@@ -4308,12 +4308,18 @@ app.get('/api/admin/costs/railway', authenticateAdmin, async (req, res) => {
               }
             }
           }
-          environments {
-            edges {
-              node {
-                name
-                id
-              }
+        }
+        me {
+          name
+          email
+          customer {
+            billingPeriodEnd
+            usageLimit
+            creditBalance
+          }
+          resourceAccess {
+            project {
+              projectId
             }
           }
         }
@@ -4330,9 +4336,19 @@ app.get('/api/admin/costs/railway', authenticateAdmin, async (req, res) => {
       }
     );
 
+    const data = response.data.data;
+    const customer = data?.me?.customer;
+
     res.json({
-      project: response.data.data?.project,
-      note: 'Para costos detallados, revisar Railway Dashboard directamente'
+      project: data?.project,
+      account: {
+        name: data?.me?.name,
+        email: data?.me?.email,
+        billingPeriodEnd: customer?.billingPeriodEnd,
+        usageLimit: customer?.usageLimit,
+        creditBalance: customer?.creditBalance
+      },
+      note: 'Para costos detallados en tiempo real, revisar Railway Dashboard'
     });
   } catch (error) {
     console.error('⚠️ ADMIN: Railway costs error:', error.response?.data || error.message);

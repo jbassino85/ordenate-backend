@@ -555,6 +555,24 @@
               <span>Servicios</span>
               <span>${data.railway.project?.services?.edges?.length || 0}</span>
             </div>
+            ${data.railway.account?.creditBalance !== undefined ? `
+              <div class="cost-item">
+                <span>Crédito Disponible</span>
+                <span>$${(data.railway.account.creditBalance / 100).toFixed(2)} USD</span>
+              </div>
+            ` : ''}
+            ${data.railway.account?.usageLimit !== undefined && data.railway.account.usageLimit > 0 ? `
+              <div class="cost-item">
+                <span>Límite de Uso</span>
+                <span>$${(data.railway.account.usageLimit / 100).toFixed(2)} USD</span>
+              </div>
+            ` : ''}
+            ${data.railway.account?.billingPeriodEnd ? `
+              <div class="cost-item">
+                <span>Fin Periodo</span>
+                <span>${new Date(data.railway.account.billingPeriodEnd).toLocaleDateString('es-CL')}</span>
+              </div>
+            ` : ''}
             <p style="color:#7f8c8d; font-size: 12px; margin-top: 10px;">${data.railway.note || ''}</p>
           `}
         </div>
