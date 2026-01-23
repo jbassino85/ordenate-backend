@@ -3708,15 +3708,21 @@ async function getOrCreateUser(phone) {
     'SELECT * FROM users WHERE phone = $1',
     [phone]
   );
-  
+
   if (result.rows.length === 0) {
     // Usuario nuevo - empezar preguntando nombre
     result = await pool.query(
-      'INSERT INTO users (phone, onboarding_complete, onboarding_step) VALUES ($1, false, $2) RETURNING *',
+      'INSERT INTO users (phone, onboarding_complete, onboarding_step, last_interaction) VALUES ($1, false, $2, NOW()) RETURNING *',
       [phone, 'awaiting_name']
     );
+  } else {
+    // Usuario existente - actualizar last_interaction
+    result = await pool.query(
+      'UPDATE users SET last_interaction = NOW() WHERE phone = $1 RETURNING *',
+      [phone]
+    );
   }
-  
+
   return result.rows[0];
 }
 
