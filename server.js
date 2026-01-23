@@ -4526,7 +4526,7 @@ app.get('/api/admin/costs/anthropic/tracked', authenticateAdmin, async (req, res
   }
 });
 
-// GET /api/admin/costs/twilio - Uso de Twilio (totalprice directo)
+// GET /api/admin/costs/twilio - Uso de Twilio con filtro de fechas
 app.get('/api/admin/costs/twilio', authenticateAdmin, async (req, res) => {
   try {
     const accountSid = process.env.TWILIO_ACCOUNT_SID;
@@ -4536,8 +4536,13 @@ app.get('/api/admin/costs/twilio', authenticateAdmin, async (req, res) => {
       return res.status(500).json({ error: 'Twilio credentials not configured' });
     }
 
-    // Usar ThisMonth con Category=totalprice para obtener el costo total directamente
-    const url = `https://api.twilio.com/2010-04-01/Accounts/${accountSid}/Usage/Records/ThisMonth.json?Category=totalprice`;
+    // Obtener fechas del query
+    const { startDate, endDate } = req.query;
+
+    // Construir URL con filtros de fecha si se proporcionan
+    let url = `https://api.twilio.com/2010-04-01/Accounts/${accountSid}/Usage/Records.json?Category=totalprice`;
+    if (startDate) url += `&StartDate=${startDate}`;
+    if (endDate) url += `&EndDate=${endDate}`;
 
     const response = await axios.get(url, {
       auth: {
@@ -4547,19 +4552,26 @@ app.get('/api/admin/costs/twilio', authenticateAdmin, async (req, res) => {
     });
 
     const records = response.data.usage_records || [];
-    const totalPriceRecord = records.find(r => r.category === 'totalprice');
 
-    const totalCost = totalPriceRecord ? parseFloat(totalPriceRecord.price || 0) : 0;
-    const startDate = totalPriceRecord?.start_date || '';
-    const endDate = totalPriceRecord?.end_date || '';
-    const asOf = totalPriceRecord?.as_of || '';
+    // Sumar todos los registros del periodo
+    let totalCost = 0;
+    let periodStart = startDate || '';
+    let periodEnd = endDate || '';
+
+    records.forEach(record => {
+      if (record.category === 'totalprice') {
+        totalCost += parseFloat(record.price || 0);
+        if (!periodStart || record.start_date < periodStart) periodStart = record.start_date;
+        if (!periodEnd || record.end_date > periodEnd) periodEnd = record.end_date;
+      }
+    });
 
     res.json({
-      period: { start: startDate, end: endDate },
+      period: { start: periodStart, end: periodEnd },
       summary: {
         totalCost: Math.round(totalCost * 100) / 100
       },
-      asOf,
+      recordsCount: records.length,
       description: 'Total Price (all Twilio services)'
     });
   } catch (error) {
@@ -4578,13 +4590,21 @@ app.get('/api/admin/costs/railway', authenticateAdmin, async (req, res) => {
       return res.status(500).json({ error: 'Railway credentials not configured' });
     }
 
+    // Obtener fechas del query
+    const { startDate, endDate } = req.query;
+
+    // Construir filtros de fecha para GraphQL
+    const dateFilter = startDate && endDate
+      ? `, startDate: "${startDate}T00:00:00Z", endDate: "${endDate}T23:59:59Z"`
+      : '';
+
     // 1. Obtener métricas de uso
     const usageQuery = `
       query {
         usage(
           measurements: [CPU_USAGE, MEMORY_USAGE_GB, NETWORK_TX_GB],
           groupBy: [SERVICE_ID],
-          projectId: "${projectId}"
+          projectId: "${projectId}"${dateFilter}
         ) {
           measurement
           value
@@ -4734,7 +4754,7 @@ app.get('/api/admin/costs/summary', authenticateAdmin, async (req, res) => {
       axios.get(`http://localhost:${process.env.PORT || 3000}/api/admin/costs/twilio?startDate=${startDate || ''}&endDate=${endDate || ''}`, {
         headers: { 'Authorization': req.headers.authorization }
       }),
-      axios.get(`http://localhost:${process.env.PORT || 3000}/api/admin/costs/railway`, {
+      axios.get(`http://localhost:${process.env.PORT || 3000}/api/admin/costs/railway?startDate=${startDate || ''}&endDate=${endDate || ''}`, {
         headers: { 'Authorization': req.headers.authorization }
       })
     ]);

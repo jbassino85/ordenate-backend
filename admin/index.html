@@ -215,44 +215,74 @@
     const API_BASE = ''; // Mismo dominio (api.ordenate.ai)
     let authToken = localStorage.getItem('adminToken');
     let currentPage = 1;
-    let selectedMonth = null; // null = mes actual
+    let selectedPeriod = 'current-month'; // Periodo seleccionado
 
-    // Generate month options (last 12 months)
+    // Generate period options
     function initMonthFilter() {
       const select = document.getElementById('monthFilter');
       const now = new Date();
-      const months = [];
+      const options = [];
 
-      // Current month first
+      // Opciones especiales primero
+      options.push({ value: 'current-month', label: 'Este mes' });
+      options.push({ value: 'last-30-days', label: 'Últimos 30 días' });
+      options.push({ value: 'last-90-days', label: 'Últimos 90 días' });
+      options.push({ value: 'current-year', label: 'Este año (' + now.getFullYear() + ')' });
+      options.push({ value: 'last-12-months', label: 'Últimos 12 meses' });
+      options.push({ value: 'divider', label: '──────────', disabled: true });
+
+      // Meses individuales (últimos 12)
       for (let i = 0; i < 12; i++) {
         const date = new Date(now.getFullYear(), now.getMonth() - i, 1);
-        const value = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`;
+        const value = `month-${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`;
         const label = date.toLocaleDateString('es-CL', { month: 'long', year: 'numeric' });
-        months.push({ value, label: label.charAt(0).toUpperCase() + label.slice(1) });
+        options.push({ value, label: label.charAt(0).toUpperCase() + label.slice(1) });
       }
 
-      select.innerHTML = months.map((m, i) =>
-        `<option value="${m.value}" ${i === 0 ? 'selected' : ''}>${m.label}</option>`
+      select.innerHTML = options.map(o =>
+        o.disabled
+          ? `<option disabled>${o.label}</option>`
+          : `<option value="${o.value}" ${o.value === 'current-month' ? 'selected' : ''}>${o.label}</option>`
       ).join('');
 
-      selectedMonth = months[0].value;
+      selectedPeriod = 'current-month';
       updateFilterInfo();
     }
 
     function getDateRange() {
-      if (!selectedMonth) {
-        const now = new Date();
-        selectedMonth = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
-      }
-
-      const [year, month] = selectedMonth.split('-').map(Number);
-      const startDate = new Date(year, month - 1, 1);
-      const endDate = new Date(year, month, 0); // Last day of month
-
-      // If current month, end date is today
       const now = new Date();
-      if (year === now.getFullYear() && month === now.getMonth() + 1) {
-        endDate.setTime(now.getTime());
+      let startDate, endDate;
+
+      if (selectedPeriod === 'current-month') {
+        startDate = new Date(now.getFullYear(), now.getMonth(), 1);
+        endDate = now;
+      } else if (selectedPeriod === 'last-30-days') {
+        startDate = new Date(now);
+        startDate.setDate(startDate.getDate() - 30);
+        endDate = now;
+      } else if (selectedPeriod === 'last-90-days') {
+        startDate = new Date(now);
+        startDate.setDate(startDate.getDate() - 90);
+        endDate = now;
+      } else if (selectedPeriod === 'current-year') {
+        startDate = new Date(now.getFullYear(), 0, 1);
+        endDate = now;
+      } else if (selectedPeriod === 'last-12-months') {
+        startDate = new Date(now.getFullYear(), now.getMonth() - 11, 1);
+        endDate = now;
+      } else if (selectedPeriod.startsWith('month-')) {
+        // Formato: month-YYYY-MM
+        const [, year, month] = selectedPeriod.split('-').map(Number);
+        startDate = new Date(year, month - 1, 1);
+        endDate = new Date(year, month, 0); // Último día del mes
+        // Si es el mes actual, end es hoy
+        if (year === now.getFullYear() && month === now.getMonth() + 1) {
+          endDate = now;
+        }
+      } else {
+        // Fallback
+        startDate = new Date(now.getFullYear(), now.getMonth(), 1);
+        endDate = now;
       }
 
       return {
@@ -669,9 +699,9 @@
       });
     });
 
-    // Month filter event
+    // Period filter event
     document.getElementById('monthFilter').addEventListener('change', (e) => {
-      selectedMonth = e.target.value;
+      selectedPeriod = e.target.value;
       updateFilterInfo();
       // Reload current active section
       const activeSection = document.querySelector('.sidebar nav a.active')?.dataset.section;
