@@ -3869,15 +3869,20 @@ app.post('/api/admin/login', async (req, res) => {
 // GET /api/admin/dashboard - KPIs principales
 app.get('/api/admin/dashboard', authenticateAdmin, async (req, res) => {
   try {
-    // Usuarios
+    // Obtener rango de fechas del query (opcional)
+    const { startDate, endDate } = req.query;
+    const hasDateFilter = startDate && endDate;
+
+    // Usuarios registrados en el periodo
     const usersStats = await pool.query(`
       SELECT
         COUNT(*) as total,
-        COUNT(*) FILTER (WHERE DATE(created_at) = CURRENT_DATE) as today,
-        COUNT(*) FILTER (WHERE created_at >= date_trunc('week', CURRENT_DATE)) as this_week,
-        COUNT(*) FILTER (WHERE created_at >= date_trunc('month', CURRENT_DATE)) as this_month
+        COUNT(*) FILTER (WHERE created_at >= $1 AND created_at <= $2) as in_period
       FROM users
-    `);
+    `, [
+      hasDateFilter ? startDate : '1970-01-01',
+      hasDateFilter ? endDate : '2100-01-01'
+    ]);
 
     // Usuarios por plan
     const usersByPlan = await pool.query(`
@@ -3887,36 +3892,43 @@ app.get('/api/admin/dashboard', authenticateAdmin, async (req, res) => {
       GROUP BY p.name
     `);
 
-    // Actividad (DAU, WAU, MAU)
+    // Actividad en el periodo
     const activityStats = await pool.query(`
       SELECT
-        COUNT(*) FILTER (WHERE DATE(last_interaction) = CURRENT_DATE) as dau,
-        COUNT(*) FILTER (WHERE last_interaction >= date_trunc('week', CURRENT_DATE)) as wau,
-        COUNT(*) FILTER (WHERE last_interaction >= date_trunc('month', CURRENT_DATE)) as mau
+        COUNT(*) FILTER (WHERE last_interaction >= $1 AND last_interaction <= $2) as active_in_period
       FROM users
       WHERE last_interaction IS NOT NULL
-    `);
+    `, [
+      hasDateFilter ? startDate : '1970-01-01',
+      hasDateFilter ? endDate : '2100-01-01'
+    ]);
 
-    // Transacciones
+    // Transacciones en el periodo
     const txStats = await pool.query(`
       SELECT
         COUNT(*) as total,
-        COUNT(*) FILTER (WHERE DATE(created_at) = CURRENT_DATE) as today,
-        COUNT(*) FILTER (WHERE created_at >= date_trunc('month', CURRENT_DATE)) as this_month,
-        COALESCE(SUM(amount) FILTER (WHERE is_income = false), 0) as total_expenses,
-        COALESCE(SUM(amount) FILTER (WHERE is_income = true), 0) as total_income
+        COUNT(*) FILTER (WHERE date >= $1 AND date <= $2) as in_period,
+        COALESCE(SUM(amount) FILTER (WHERE is_income = false AND date >= $1 AND date <= $2), 0) as total_expenses,
+        COALESCE(SUM(amount) FILTER (WHERE is_income = true AND date >= $1 AND date <= $2), 0) as total_income
       FROM transactions
-    `);
+    `, [
+      hasDateFilter ? startDate : '1970-01-01',
+      hasDateFilter ? endDate : '2100-01-01'
+    ]);
 
-    // Promedio de transacciones por usuario
+    // Promedio de transacciones por usuario en el periodo
     const avgTxPerUser = await pool.query(`
       SELECT ROUND(AVG(tx_count), 1) as avg_per_user
       FROM (
         SELECT user_id, COUNT(*) as tx_count
         FROM transactions
+        WHERE date >= $1 AND date <= $2
         GROUP BY user_id
       ) sub
-    `);
+    `, [
+      hasDateFilter ? startDate : '1970-01-01',
+      hasDateFilter ? endDate : '2100-01-01'
+    ]);
 
     // Gastos fijos
     const fixedExpensesStats = await pool.query(`
@@ -3939,22 +3951,20 @@ app.get('/api/admin/dashboard', authenticateAdmin, async (req, res) => {
     });
 
     res.json({
+      period: hasDateFilter ? { start: startDate, end: endDate } : null,
       users: {
         total: parseInt(users.total),
-        today: parseInt(users.today),
-        thisWeek: parseInt(users.this_week),
-        thisMonth: parseInt(users.this_month),
+        thisMonth: parseInt(users.in_period),
         byPlan
       },
       activity: {
-        dau: parseInt(activity.dau),
-        wau: parseInt(activity.wau),
-        mau: parseInt(activity.mau)
+        dau: parseInt(activity.active_in_period),
+        wau: parseInt(activity.active_in_period),
+        mau: parseInt(activity.active_in_period)
       },
       transactions: {
         total: parseInt(tx.total),
-        today: parseInt(tx.today),
-        thisMonth: parseInt(tx.this_month),
+        thisMonth: parseInt(tx.in_period),
         totalExpenses: parseFloat(tx.total_expenses),
         totalIncome: parseFloat(tx.total_income),
         avgPerUser: parseFloat(avgTxPerUser.rows[0]?.avg_per_user || 0)
