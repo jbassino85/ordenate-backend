@@ -4544,14 +4544,25 @@ app.get('/api/admin/costs/twilio', authenticateAdmin, async (req, res) => {
     if (startDate) url += `&StartDate=${startDate}`;
     if (endDate) url += `&EndDate=${endDate}`;
 
-    const response = await axios.get(url, {
-      auth: {
-        username: accountSid,
-        password: authToken
-      }
-    });
-
-    const records = response.data.usage_records || [];
+    let records = [];
+    try {
+      const response = await axios.get(url, {
+        auth: {
+          username: accountSid,
+          password: authToken
+        }
+      });
+      records = response.data.usage_records || [];
+    } catch (apiError) {
+      // Si Twilio devuelve error (ej: rango de fechas inválido), devolver datos vacíos
+      console.warn('⚠️ Twilio API error:', apiError.response?.data?.message || apiError.message);
+      return res.json({
+        period: { start: startDate || '', end: endDate || '' },
+        summary: { totalCost: 0 },
+        recordsCount: 0,
+        description: 'No data available for this period'
+      });
+    }
 
     // Sumar todos los registros del periodo
     let totalCost = 0;
@@ -4572,11 +4583,11 @@ app.get('/api/admin/costs/twilio', authenticateAdmin, async (req, res) => {
         totalCost: Math.round(totalCost * 100) / 100
       },
       recordsCount: records.length,
-      description: 'Total Price (all Twilio services)'
+      description: records.length > 0 ? 'Total Price (all Twilio services)' : 'No data for this period'
     });
   } catch (error) {
-    console.error('⚠️ ADMIN: Twilio costs error:', error.response?.data || error.message);
-    res.status(500).json({ error: 'Error fetching Twilio costs', details: error.response?.data });
+    console.error('⚠️ ADMIN: Twilio costs error:', error.message);
+    res.status(500).json({ error: 'Error fetching Twilio costs', details: error.message });
   }
 });
 
