@@ -4694,8 +4694,9 @@ app.get('/api/admin/costs/summary', authenticateAdmin, async (req, res) => {
     const { startDate, endDate } = req.query;
 
     // Hacer las 3 llamadas en paralelo
+    // Usar model=haiku para obtener solo costos de ordenate-prod (no incluir Council/Opus)
     const [anthropic, twilio, railway] = await Promise.allSettled([
-      axios.get(`http://localhost:${process.env.PORT || 3000}/api/admin/costs/anthropic?startDate=${startDate || ''}&endDate=${endDate || ''}`, {
+      axios.get(`http://localhost:${process.env.PORT || 3000}/api/admin/costs/anthropic?model=haiku&startDate=${startDate || ''}&endDate=${endDate || ''}`, {
         headers: { 'Authorization': req.headers.authorization }
       }),
       axios.get(`http://localhost:${process.env.PORT || 3000}/api/admin/costs/twilio?startDate=${startDate || ''}&endDate=${endDate || ''}`, {
