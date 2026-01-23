@@ -355,7 +355,7 @@
           <td>${u.transactionCount}</td>
           <td>${u.lastInteraction ? new Date(u.lastInteraction).toLocaleDateString('es-CL') : '-'}</td>
           <td>${new Date(u.createdAt).toLocaleDateString('es-CL')}</td>
-          <td><button class="btn-view" onclick="viewUser(${u.id})">Ver</button></td>
+          <td><button class="btn-view" onclick="viewUser('${u.id}')">Ver</button></td>
         </tr>
       `).join('');
 
