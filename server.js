@@ -4231,7 +4231,19 @@ app.get('/api/admin/costs/anthropic', authenticateAdmin, async (req, res) => {
       bucketWidth = '1h';
     }
 
-    // Obtener costos de toda la organización (no hay filtro por api_key disponible)
+    // Filtro por modelo (opcional) - útil para separar costos de ordenate-prod (haiku) vs otros (opus)
+    // Valores: 'haiku' para ordenate-prod, 'opus' para Claude Code, 'all' para todos
+    const modelFilter = req.query.model || 'all';
+
+    // Mapeo de filtros a modelos reales
+    const MODEL_FILTERS = {
+      'haiku': 'claude-haiku-4-5-20251001',
+      'opus': 'claude-opus-4-5-20251101',
+      'all': null
+    };
+    const targetModel = MODEL_FILTERS[modelFilter] || modelFilter; // Permite modelo exacto también
+
+    // Obtener costos de la organización, filtrar por modelo si se especifica
     const url = new URL('https://api.anthropic.com/v1/organizations/cost_report');
     url.searchParams.append('starting_at', start.toISOString());
     url.searchParams.append('ending_at', end.toISOString());
@@ -4261,6 +4273,11 @@ app.get('/api/admin/costs/anthropic', authenticateAdmin, async (req, res) => {
       let dayOther = 0;
 
       results.forEach(result => {
+        // Filtrar por modelo si se especificó
+        if (targetModel && result.model && result.model !== targetModel) {
+          return; // Skip este resultado
+        }
+
         // El amount ya viene en USD (ej: "183.369")
         const amountUSD = parseFloat(result.amount || 0);
         const tokenType = result.token_type || '';
@@ -4310,7 +4327,11 @@ app.get('/api/admin/costs/anthropic', authenticateAdmin, async (req, res) => {
         outputCost: Math.round(outputCost * 100) / 100,
         otherCost: Math.round(otherCost * 100) / 100,
         currency: 'USD',
-        scope: 'organization'
+        scope: modelFilter === 'all' ? 'organization' : `model:${targetModel}`
+      },
+      filter: {
+        model: modelFilter,
+        resolvedModel: targetModel
       },
       dailyCosts,
       pagination: {
@@ -4318,7 +4339,9 @@ app.get('/api/admin/costs/anthropic', authenticateAdmin, async (req, res) => {
         nextPage,
         bucketsReturned: buckets.length
       },
-      note: 'These are costs for the ENTIRE Anthropic organization (includes all API keys). For ordenate-prod specific costs, use /api/admin/costs/anthropic/tracked'
+      note: modelFilter === 'all'
+        ? 'Showing costs for ENTIRE organization. Use ?model=haiku for ordenate-prod costs only.'
+        : `Filtered by model: ${targetModel}`
     });
   } catch (error) {
     console.error('⚠️ ADMIN: Anthropic costs error:', error.response?.data || error.message);
