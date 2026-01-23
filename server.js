@@ -4139,40 +4139,97 @@ app.get('/api/admin/users/:id', authenticateAdmin, async (req, res) => {
 // ADMIN COSTS ENDPOINTS
 // ============================================
 
-// GET /api/admin/costs/anthropic - Uso de Claude API (solo Haiku para Ordenate)
+// GET /api/admin/costs/anthropic - Uso de Claude API (filtrado por API key de Ordenate)
 app.get('/api/admin/costs/anthropic', authenticateAdmin, async (req, res) => {
   try {
-    const { startDate, endDate } = req.query;
+    const { startDate, endDate, period } = req.query;
 
-    // Defaults: ultimo mes
     const now = new Date();
-    const defaultStart = new Date(now.getFullYear(), now.getMonth(), 1);
-    const defaultEnd = new Date(now.getFullYear(), now.getMonth() + 1, 0);
+    let start, end;
 
-    const start = startDate ? new Date(startDate) : defaultStart;
-    const end = endDate ? new Date(endDate) : defaultEnd;
+    // Soporte para períodos predefinidos
+    if (period) {
+      switch (period) {
+        case 'today':
+          start = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+          end = now;
+          break;
+        case 'yesterday':
+          start = new Date(now.getFullYear(), now.getMonth(), now.getDate() - 1);
+          end = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+          break;
+        case 'last7days':
+          start = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
+          end = now;
+          break;
+        case 'last30days':
+          start = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
+          end = now;
+          break;
+        case 'thisMonth':
+          start = new Date(now.getFullYear(), now.getMonth(), 1);
+          end = now;
+          break;
+        case 'lastMonth':
+          start = new Date(now.getFullYear(), now.getMonth() - 1, 1);
+          end = new Date(now.getFullYear(), now.getMonth(), 0);
+          break;
+        default:
+          start = new Date(now.getFullYear(), now.getMonth(), 1);
+          end = now;
+      }
+    } else {
+      // Fechas personalizadas o default (mes actual hasta hoy)
+      start = startDate ? new Date(startDate) : new Date(now.getFullYear(), now.getMonth(), 1);
+      end = endDate ? new Date(endDate) : now;
+    }
 
-    const apiKey = process.env.ANTHROPIC_ADMIN_API_KEY;
-    if (!apiKey) {
+    // Validar que start < end
+    if (start > end) {
+      return res.status(400).json({ error: 'startDate must be before endDate' });
+    }
+
+    // Limitar rango máximo a 90 días
+    const maxRangeDays = 90;
+    const rangeDays = (end - start) / (1000 * 60 * 60 * 24);
+    if (rangeDays > maxRangeDays) {
+      return res.status(400).json({
+        error: `Date range too large. Maximum is ${maxRangeDays} days.`,
+        requestedDays: Math.round(rangeDays)
+      });
+    }
+
+    const adminApiKey = process.env.ANTHROPIC_ADMIN_API_KEY;
+    const ordenateApiKeyId = process.env.ANTHROPIC_ORDENATE_API_KEY_ID || 'apikey_01C2U3UNXic3Fuy6JZA7B6xk';
+
+    if (!adminApiKey) {
       return res.status(500).json({ error: 'ANTHROPIC_ADMIN_API_KEY not configured' });
     }
 
-    // Usar cost_report endpoint con group_by description para ver desglose por modelo
+    // Determinar bucket_width según el rango de fechas
+    let bucketWidth = '1d';
+    if (rangeDays <= 2) {
+      bucketWidth = '1h';
+    }
+
+    // IMPORTANTE: Usar api_key_ids[] para filtrar solo ordenate-prod
     const url = new URL('https://api.anthropic.com/v1/organizations/cost_report');
     url.searchParams.append('starting_at', start.toISOString());
     url.searchParams.append('ending_at', end.toISOString());
-    url.searchParams.append('bucket_width', '1d');
+    url.searchParams.append('bucket_width', bucketWidth);
+    url.searchParams.append('group_by[]', 'api_key_id');
     url.searchParams.append('group_by[]', 'description');
+    url.searchParams.append('api_key_ids[]', ordenateApiKeyId);
 
     const response = await axios.get(url.toString(), {
       headers: {
         'anthropic-version': '2023-06-01',
-        'x-api-key': apiKey
+        'x-api-key': adminApiKey
       }
     });
 
-    // Procesar buckets y filtrar SOLO modelo Haiku
     const buckets = response.data?.data || [];
+
     let totalCost = 0;
     let inputCost = 0;
     let outputCost = 0;
@@ -4181,50 +4238,61 @@ app.get('/api/admin/costs/anthropic', authenticateAdmin, async (req, res) => {
     buckets.forEach(bucket => {
       const results = bucket.results || [];
       let dayTotal = 0;
+      let dayInput = 0;
+      let dayOutput = 0;
 
       results.forEach(result => {
-        // IMPORTANTE: Usar el campo 'model' que viene directo de la API
-        // Ejemplo: "claude-haiku-4-5-20251001" o "claude-opus-4-5-20251101"
-        const model = (result.model || '').toLowerCase();
+        // El amount está en centavos, convertir a USD
+        const amountUSD = parseFloat(result.amount || 0) / 100;
         const tokenType = result.token_type || '';
 
-        // Solo contar costos de Haiku (ignorar Opus, Sonnet, Web Search, etc.)
-        if (model.includes('haiku')) {
-          // El amount ya viene en dólares (no en centavos)
-          const amount = parseFloat(result.amount || 0);
+        dayTotal += amountUSD;
+        totalCost += amountUSD;
 
-          dayTotal += amount;
-          totalCost += amount;
-
-          // Separar input vs output basado en token_type
-          if (tokenType.includes('input')) {
-            inputCost += amount;
-          } else if (tokenType === 'output_tokens') {
-            outputCost += amount;
-          }
+        if (tokenType.includes('input')) {
+          inputCost += amountUSD;
+          dayInput += amountUSD;
+        } else if (tokenType === 'output_tokens') {
+          outputCost += amountUSD;
+          dayOutput += amountUSD;
         }
       });
 
       if (dayTotal > 0) {
         dailyCosts.push({
           date: bucket.starting_at?.split('T')[0],
-          cost: Math.round(dayTotal * 1000) / 1000 // 3 decimales para costos pequeños
+          cost: Math.round(dayTotal * 100) / 100,
+          input: Math.round(dayInput * 100) / 100,
+          output: Math.round(dayOutput * 100) / 100
         });
       }
     });
 
+    // Paginación si hay más datos
+    const hasMore = response.data?.has_more || false;
+    const nextPage = response.data?.next_page || null;
+
     res.json({
-      period: { start: start.toISOString().split('T')[0], end: end.toISOString().split('T')[0] },
+      period: {
+        start: start.toISOString().split('T')[0],
+        end: end.toISOString().split('T')[0],
+        days: Math.round(rangeDays),
+        bucketWidth
+      },
       summary: {
-        totalCost: Math.round(totalCost * 1000) / 1000,
-        inputCost: Math.round(inputCost * 1000) / 1000,
-        outputCost: Math.round(outputCost * 1000) / 1000,
-        model: 'claude-haiku-4.5 (filtered)',
-        currency: 'USD'
+        totalCost: Math.round(totalCost * 100) / 100,
+        inputCost: Math.round(inputCost * 100) / 100,
+        outputCost: Math.round(outputCost * 100) / 100,
+        model: 'claude-haiku-4.5',
+        currency: 'USD',
+        apiKeyName: 'ordenate-prod'
       },
       dailyCosts,
-      rawBuckets: buckets.length,
-      note: 'Solo incluye uso de Haiku (Ordenate). Excluye Opus/Sonnet de uso personal.'
+      pagination: {
+        hasMore,
+        nextPage,
+        bucketsReturned: buckets.length
+      }
     });
   } catch (error) {
     console.error('⚠️ ADMIN: Anthropic costs error:', error.response?.data || error.message);
