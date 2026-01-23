@@ -3663,21 +3663,21 @@ async function checkBudgetAlerts(user, categoryId) {
      WHERE b.user_id = $1 AND b.category_id = $2`,
     [user.id, categoryId]
   );
-  
+
   if (budgetResult.rows.length === 0) return;
-  
+
   const { monthly_limit, name, emoji } = budgetResult.rows[0];
   const budget = parseFloat(monthly_limit);
-  
+
   // Calcular gasto del mes con category_id
   const spentResult = await pool.query(
-    `SELECT SUM(amount) as total FROM transactions 
-     WHERE user_id = $1 AND category_id = $2 
+    `SELECT SUM(amount) as total FROM transactions
+     WHERE user_id = $1 AND category_id = $2
      AND date >= date_trunc('month', CURRENT_DATE)
      AND is_income = false`,
     [user.id, categoryId]
   );
-  
+
   const spent = parseFloat(spentResult.rows[0].total || 0);
 
   // HIGH SEVERITY FIX: Prevent division by zero
@@ -3689,13 +3689,87 @@ async function checkBudgetAlerts(user, categoryId) {
   const percentage = (spent / budget) * 100;
 
   if (percentage >= 100) {
-    await sendWhatsApp(user.phone, 
-      `🚨 ¡Ojo! Te pasaste del presupuesto de ${emoji} ${name}:\n\nGastaste: $${spent.toLocaleString('es-CL')}\nTenías: $${budget.toLocaleString('es-CL')}`
+    // Generar tip personalizado con Claude
+    const tip = await generateCategoryBudgetTip(user, {
+      categoryName: name,
+      categoryEmoji: emoji,
+      spent,
+      budget,
+      percentage,
+      categoryId
+    });
+
+    await sendWhatsApp(user.phone,
+      `🚨 ¡Ojo! Te pasaste del presupuesto de ${emoji} ${name}:\n\n` +
+      `Gastaste: $${spent.toLocaleString('es-CL')}\n` +
+      `Tenías: $${budget.toLocaleString('es-CL')}\n\n` +
+      `💡 ${tip}`
     );
   } else if (percentage >= 80) {
     await sendWhatsApp(user.phone,
       `⚠️ Atención: Ya llevas ${percentage.toFixed(0)}% del presupuesto en ${emoji} ${name}`
     );
+  }
+}
+
+// Generar tip personalizado para presupuesto de categoría excedido
+async function generateCategoryBudgetTip(user, data) {
+  const { categoryName, categoryEmoji, spent, budget, categoryId } = data;
+  const exceeded = spent - budget;
+
+  // Obtener últimas transacciones de esta categoría para contexto
+  const recentTxResult = await pool.query(
+    `SELECT description, amount, date
+     FROM transactions
+     WHERE user_id = $1 AND category_id = $2
+     AND date >= date_trunc('month', CURRENT_DATE)
+     AND is_income = false
+     ORDER BY date DESC
+     LIMIT 5`,
+    [user.id, categoryId]
+  );
+
+  const recentTx = recentTxResult.rows.map(tx =>
+    `- ${tx.description}: $${parseFloat(tx.amount).toLocaleString('es-CL')}`
+  ).join('\n');
+
+  // Obtener ingreso del usuario si existe
+  const income = user.monthly_income ? parseFloat(user.monthly_income) : null;
+  const incomeContext = income
+    ? `Ingreso mensual: $${income.toLocaleString('es-CL')}\n`
+    : '';
+
+  const prompt = `Eres un asesor financiero en Chile. El usuario se pasó de su presupuesto en una categoría. Da un consejo específico y accionable en máximo 2 líneas.
+
+${incomeContext}Categoría: ${categoryEmoji} ${categoryName}
+Presupuesto: $${budget.toLocaleString('es-CL')}
+Gastado: $${spent.toLocaleString('es-CL')}
+Excedido en: $${exceeded.toLocaleString('es-CL')}
+
+Últimos gastos en esta categoría:
+${recentTx || '(sin detalle)'}
+
+Responde SOLO con el consejo directo, sin preámbulos. Sé específico basándote en los gastos recientes si es posible.`;
+
+  try {
+    const response = await anthropic.messages.create({
+      model: "claude-haiku-4-5-20251001",
+      max_tokens: 150,
+      messages: [{
+        role: "user",
+        content: prompt
+      }]
+    });
+
+    if (!response.content || response.content.length === 0) {
+      console.error('❌ Empty response from Claude API in generateCategoryBudgetTip');
+      return `Intenta reducir gastos en ${categoryName} el resto del mes para compensar.`;
+    }
+
+    return response.content[0].text;
+  } catch (error) {
+    console.error('❌ Error generating category budget tip:', error);
+    return `Intenta reducir gastos en ${categoryName} el resto del mes para compensar.`;
   }
 }
 
