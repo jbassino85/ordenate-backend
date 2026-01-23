@@ -984,6 +984,26 @@ EJEMPLOS DE ELIMINAR CUENTA:
       console.log(`⚡ Cache hit: ${usage.cache_read_input_tokens} tokens (saved ~$${(usage.cache_read_input_tokens * 0.0000009).toFixed(4)})`);
     }
 
+    // Track API usage in database for accurate cost calculation
+    try {
+      await pool.query(
+        `INSERT INTO api_usage (user_id, model, input_tokens, output_tokens, cache_creation_tokens, cache_read_tokens, request_type)
+         VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+        [
+          user?.id || null,
+          'claude-haiku-4-5-20251001',
+          usage.input_tokens || 0,
+          usage.output_tokens || 0,
+          usage.cache_creation_input_tokens || 0,
+          usage.cache_read_input_tokens || 0,
+          'classify_intent'
+        ]
+      );
+    } catch (trackError) {
+      console.error('⚠️ Failed to track API usage:', trackError.message);
+      // Don't fail the request if tracking fails
+    }
+
     // MEDIUM SEVERITY FIX: Check if response.content exists before accessing
     if (!response.content || response.content.length === 0) {
       console.error('❌ Empty response from Claude API');
@@ -4211,7 +4231,19 @@ app.get('/api/admin/costs/anthropic', authenticateAdmin, async (req, res) => {
       bucketWidth = '1h';
     }
 
-    // Obtener costos de toda la organización (no hay filtro por api_key disponible)
+    // Filtro por modelo (opcional) - útil para separar costos de ordenate-prod (haiku) vs otros (opus)
+    // Valores: 'haiku' para ordenate-prod, 'opus' para Claude Code, 'all' para todos
+    const modelFilter = req.query.model || 'all';
+
+    // Mapeo de filtros a modelos reales
+    const MODEL_FILTERS = {
+      'haiku': 'claude-haiku-4-5-20251001',
+      'opus': 'claude-opus-4-5-20251101',
+      'all': null
+    };
+    const targetModel = MODEL_FILTERS[modelFilter] || modelFilter; // Permite modelo exacto también
+
+    // Obtener costos de la organización, filtrar por modelo si se especifica
     const url = new URL('https://api.anthropic.com/v1/organizations/cost_report');
     url.searchParams.append('starting_at', start.toISOString());
     url.searchParams.append('ending_at', end.toISOString());
@@ -4241,6 +4273,11 @@ app.get('/api/admin/costs/anthropic', authenticateAdmin, async (req, res) => {
       let dayOther = 0;
 
       results.forEach(result => {
+        // Filtrar por modelo si se especificó
+        if (targetModel && result.model && result.model !== targetModel) {
+          return; // Skip este resultado
+        }
+
         // El amount ya viene en USD (ej: "183.369")
         const amountUSD = parseFloat(result.amount || 0);
         const tokenType = result.token_type || '';
@@ -4290,18 +4327,170 @@ app.get('/api/admin/costs/anthropic', authenticateAdmin, async (req, res) => {
         outputCost: Math.round(outputCost * 100) / 100,
         otherCost: Math.round(otherCost * 100) / 100,
         currency: 'USD',
-        scope: 'organization'
+        scope: modelFilter === 'all' ? 'organization' : `model:${targetModel}`
+      },
+      filter: {
+        model: modelFilter,
+        resolvedModel: targetModel
       },
       dailyCosts,
       pagination: {
         hasMore,
         nextPage,
         bucketsReturned: buckets.length
-      }
+      },
+      note: modelFilter === 'all'
+        ? 'Showing costs for ENTIRE organization. Use ?model=haiku for ordenate-prod costs only.'
+        : `Filtered by model: ${targetModel}`
     });
   } catch (error) {
     console.error('⚠️ ADMIN: Anthropic costs error:', error.response?.data || error.message);
     res.status(500).json({ error: 'Error fetching Anthropic costs', details: error.response?.data });
+  }
+});
+
+// GET /api/admin/costs/anthropic/tracked - Costos REALES de ordenate-prod basados en tokens rastreados
+// Este endpoint calcula los costos basados en el uso real de la API key de ordenate,
+// no los costos de toda la organización de Anthropic
+app.get('/api/admin/costs/anthropic/tracked', authenticateAdmin, async (req, res) => {
+  try {
+    const { startDate, endDate, period } = req.query;
+    const now = new Date();
+    let start, end;
+
+    if (period) {
+      switch (period) {
+        case 'today':
+          start = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+          end = now;
+          break;
+        case 'week':
+          start = new Date(now);
+          start.setDate(start.getDate() - 7);
+          end = now;
+          break;
+        case 'month':
+          start = new Date(now.getFullYear(), now.getMonth(), 1);
+          end = now;
+          break;
+        default:
+          start = new Date(now.getFullYear(), now.getMonth(), 1);
+          end = now;
+      }
+    } else {
+      start = startDate ? new Date(startDate) : new Date(now.getFullYear(), now.getMonth(), 1);
+      end = endDate ? new Date(endDate) : now;
+    }
+
+    // Claude Haiku 4.5 pricing (USD per million tokens)
+    const PRICING = {
+      'claude-haiku-4-5-20251001': {
+        input: 1.00,           // $1.00 per MTok
+        output: 5.00,          // $5.00 per MTok
+        cacheWrite: 1.25,      // $1.25 per MTok (1.25x input)
+        cacheRead: 0.10        // $0.10 per MTok (0.1x input)
+      }
+    };
+
+    // Query tracked usage from database
+    const result = await pool.query(
+      `SELECT
+        model,
+        DATE(created_at) as date,
+        SUM(input_tokens) as total_input,
+        SUM(output_tokens) as total_output,
+        SUM(cache_creation_tokens) as total_cache_write,
+        SUM(cache_read_tokens) as total_cache_read,
+        COUNT(*) as request_count
+       FROM api_usage
+       WHERE created_at >= $1 AND created_at <= $2
+       GROUP BY model, DATE(created_at)
+       ORDER BY date DESC`,
+      [start.toISOString(), end.toISOString()]
+    );
+
+    let totalCost = 0;
+    let totalInputCost = 0;
+    let totalOutputCost = 0;
+    let totalCacheWriteCost = 0;
+    let totalCacheReadCost = 0;
+    let totalRequests = 0;
+    let totalInputTokens = 0;
+    let totalOutputTokens = 0;
+    let totalCacheWriteTokens = 0;
+    let totalCacheReadTokens = 0;
+    const dailyCosts = [];
+
+    result.rows.forEach(row => {
+      const pricing = PRICING[row.model] || PRICING['claude-haiku-4-5-20251001'];
+
+      const inputTokens = parseInt(row.total_input) || 0;
+      const outputTokens = parseInt(row.total_output) || 0;
+      const cacheWriteTokens = parseInt(row.total_cache_write) || 0;
+      const cacheReadTokens = parseInt(row.total_cache_read) || 0;
+      const requests = parseInt(row.request_count) || 0;
+
+      // Calculate costs (tokens / 1,000,000 * price per MTok)
+      const inputCost = (inputTokens / 1000000) * pricing.input;
+      const outputCost = (outputTokens / 1000000) * pricing.output;
+      const cacheWriteCost = (cacheWriteTokens / 1000000) * pricing.cacheWrite;
+      const cacheReadCost = (cacheReadTokens / 1000000) * pricing.cacheRead;
+      const dayCost = inputCost + outputCost + cacheWriteCost + cacheReadCost;
+
+      totalInputCost += inputCost;
+      totalOutputCost += outputCost;
+      totalCacheWriteCost += cacheWriteCost;
+      totalCacheReadCost += cacheReadCost;
+      totalCost += dayCost;
+      totalRequests += requests;
+      totalInputTokens += inputTokens;
+      totalOutputTokens += outputTokens;
+      totalCacheWriteTokens += cacheWriteTokens;
+      totalCacheReadTokens += cacheReadTokens;
+
+      dailyCosts.push({
+        date: row.date,
+        model: row.model,
+        requests,
+        tokens: {
+          input: inputTokens,
+          output: outputTokens,
+          cacheWrite: cacheWriteTokens,
+          cacheRead: cacheReadTokens
+        },
+        cost: Math.round(dayCost * 10000) / 10000
+      });
+    });
+
+    res.json({
+      period: {
+        start: start.toISOString().split('T')[0],
+        end: end.toISOString().split('T')[0]
+      },
+      summary: {
+        totalCost: Math.round(totalCost * 10000) / 10000,
+        inputCost: Math.round(totalInputCost * 10000) / 10000,
+        outputCost: Math.round(totalOutputCost * 10000) / 10000,
+        cacheWriteCost: Math.round(totalCacheWriteCost * 10000) / 10000,
+        cacheReadCost: Math.round(totalCacheReadCost * 10000) / 10000,
+        currency: 'USD',
+        scope: 'ordenate-prod (tracked)'
+      },
+      tokens: {
+        input: totalInputTokens,
+        output: totalOutputTokens,
+        cacheWrite: totalCacheWriteTokens,
+        cacheRead: totalCacheReadTokens,
+        total: totalInputTokens + totalOutputTokens + totalCacheWriteTokens + totalCacheReadTokens
+      },
+      requests: totalRequests,
+      dailyCosts,
+      pricing: PRICING['claude-haiku-4-5-20251001'],
+      note: 'Costs calculated from internally tracked token usage, not from Anthropic API'
+    });
+  } catch (error) {
+    console.error('⚠️ ADMIN: Tracked costs error:', error);
+    res.status(500).json({ error: 'Error calculating tracked costs', details: error.message });
   }
 });
 
@@ -4505,8 +4694,9 @@ app.get('/api/admin/costs/summary', authenticateAdmin, async (req, res) => {
     const { startDate, endDate } = req.query;
 
     // Hacer las 3 llamadas en paralelo
+    // Usar model=haiku para obtener solo costos de ordenate-prod (no incluir Council/Opus)
     const [anthropic, twilio, railway] = await Promise.allSettled([
-      axios.get(`http://localhost:${process.env.PORT || 3000}/api/admin/costs/anthropic?startDate=${startDate || ''}&endDate=${endDate || ''}`, {
+      axios.get(`http://localhost:${process.env.PORT || 3000}/api/admin/costs/anthropic?model=haiku&startDate=${startDate || ''}&endDate=${endDate || ''}`, {
         headers: { 'Authorization': req.headers.authorization }
       }),
       axios.get(`http://localhost:${process.env.PORT || 3000}/api/admin/costs/twilio?startDate=${startDate || ''}&endDate=${endDate || ''}`, {
