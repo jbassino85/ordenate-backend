@@ -4200,7 +4200,6 @@ app.get('/api/admin/costs/anthropic', authenticateAdmin, async (req, res) => {
     }
 
     const adminApiKey = process.env.ANTHROPIC_ADMIN_API_KEY;
-    const ordenateApiKeyId = process.env.ANTHROPIC_ORDENATE_API_KEY_ID || 'apikey_01C2U3UNXic3Fuy6JZA7B6xk';
 
     if (!adminApiKey) {
       return res.status(500).json({ error: 'ANTHROPIC_ADMIN_API_KEY not configured' });
@@ -4212,14 +4211,12 @@ app.get('/api/admin/costs/anthropic', authenticateAdmin, async (req, res) => {
       bucketWidth = '1h';
     }
 
-    // IMPORTANTE: Usar api_key_ids[] para filtrar solo ordenate-prod
+    // Obtener costos de toda la organización (no hay filtro por api_key disponible)
     const url = new URL('https://api.anthropic.com/v1/organizations/cost_report');
     url.searchParams.append('starting_at', start.toISOString());
     url.searchParams.append('ending_at', end.toISOString());
     url.searchParams.append('bucket_width', bucketWidth);
-    url.searchParams.append('group_by[]', 'api_key_id');
     url.searchParams.append('group_by[]', 'description');
-    url.searchParams.append('api_key_ids[]', ordenateApiKeyId);
 
     const response = await axios.get(url.toString(), {
       headers: {
@@ -4233,6 +4230,7 @@ app.get('/api/admin/costs/anthropic', authenticateAdmin, async (req, res) => {
     let totalCost = 0;
     let inputCost = 0;
     let outputCost = 0;
+    let otherCost = 0;
     const dailyCosts = [];
 
     buckets.forEach(bucket => {
@@ -4240,21 +4238,27 @@ app.get('/api/admin/costs/anthropic', authenticateAdmin, async (req, res) => {
       let dayTotal = 0;
       let dayInput = 0;
       let dayOutput = 0;
+      let dayOther = 0;
 
       results.forEach(result => {
-        // El amount está en centavos, convertir a USD
-        const amountUSD = parseFloat(result.amount || 0) / 100;
+        // El amount ya viene en USD (ej: "183.369")
+        const amountUSD = parseFloat(result.amount || 0);
         const tokenType = result.token_type || '';
 
         dayTotal += amountUSD;
         totalCost += amountUSD;
 
-        if (tokenType.includes('input')) {
+        // token_type puede ser: uncached_input_tokens, cached_input_tokens, output_tokens, o null (web_search, etc)
+        if (tokenType.includes('input_tokens')) {
           inputCost += amountUSD;
           dayInput += amountUSD;
         } else if (tokenType === 'output_tokens') {
           outputCost += amountUSD;
           dayOutput += amountUSD;
+        } else {
+          // Otros costos (web_search, etc)
+          otherCost += amountUSD;
+          dayOther += amountUSD;
         }
       });
 
@@ -4263,7 +4267,8 @@ app.get('/api/admin/costs/anthropic', authenticateAdmin, async (req, res) => {
           date: bucket.starting_at?.split('T')[0],
           cost: Math.round(dayTotal * 100) / 100,
           input: Math.round(dayInput * 100) / 100,
-          output: Math.round(dayOutput * 100) / 100
+          output: Math.round(dayOutput * 100) / 100,
+          other: Math.round(dayOther * 100) / 100
         });
       }
     });
@@ -4283,9 +4288,9 @@ app.get('/api/admin/costs/anthropic', authenticateAdmin, async (req, res) => {
         totalCost: Math.round(totalCost * 100) / 100,
         inputCost: Math.round(inputCost * 100) / 100,
         outputCost: Math.round(outputCost * 100) / 100,
-        model: 'claude-haiku-4.5',
+        otherCost: Math.round(otherCost * 100) / 100,
         currency: 'USD',
-        apiKeyName: 'ordenate-prod'
+        scope: 'organization'
       },
       dailyCosts,
       pagination: {
