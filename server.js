@@ -4243,29 +4243,44 @@ app.get('/api/admin/costs/anthropic', authenticateAdmin, async (req, res) => {
     };
     const targetModel = MODEL_FILTERS[modelFilter] || modelFilter; // Permite modelo exacto también
 
-    // Obtener costos de la organización, filtrar por modelo si se especifica
-    const url = new URL('https://api.anthropic.com/v1/organizations/cost_report');
-    url.searchParams.append('starting_at', start.toISOString());
-    url.searchParams.append('ending_at', end.toISOString());
-    url.searchParams.append('bucket_width', bucketWidth);
-    url.searchParams.append('group_by[]', 'description');
+    // Obtener costos de la organización con paginación completa
+    let allBuckets = [];
+    let nextPageToken = null;
+    let pageCount = 0;
+    const maxPages = 50; // Límite de seguridad
 
-    const response = await axios.get(url.toString(), {
-      headers: {
-        'anthropic-version': '2023-06-01',
-        'x-api-key': adminApiKey
+    do {
+      const url = new URL('https://api.anthropic.com/v1/organizations/cost_report');
+      url.searchParams.append('starting_at', start.toISOString());
+      url.searchParams.append('ending_at', end.toISOString());
+      url.searchParams.append('bucket_width', bucketWidth);
+      url.searchParams.append('group_by[]', 'description');
+      if (nextPageToken) {
+        url.searchParams.append('page', nextPageToken);
       }
-    });
 
-    const buckets = response.data?.data || [];
+      const response = await axios.get(url.toString(), {
+        headers: {
+          'anthropic-version': '2023-06-01',
+          'x-api-key': adminApiKey
+        }
+      });
+
+      const buckets = response.data?.data || [];
+      allBuckets = allBuckets.concat(buckets);
+      nextPageToken = response.data?.has_more ? response.data?.next_page : null;
+      pageCount++;
+    } while (nextPageToken && pageCount < maxPages);
 
     let totalCost = 0;
     let inputCost = 0;
     let outputCost = 0;
     let otherCost = 0;
+    let cacheReadCost = 0;
+    let cacheWriteCost = 0;
     const dailyCosts = [];
 
-    buckets.forEach(bucket => {
+    allBuckets.forEach(bucket => {
       const results = bucket.results || [];
       let dayTotal = 0;
       let dayInput = 0;
@@ -4274,7 +4289,9 @@ app.get('/api/admin/costs/anthropic', authenticateAdmin, async (req, res) => {
 
       results.forEach(result => {
         // Filtrar por modelo si se especificó
-        if (targetModel && result.model && result.model !== targetModel) {
+        // Si targetModel está definido, solo incluir resultados que coincidan exactamente
+        // Esto excluye web_search y otros costos con model: null
+        if (targetModel && result.model !== targetModel) {
           return; // Skip este resultado
         }
 
@@ -4285,15 +4302,23 @@ app.get('/api/admin/costs/anthropic', authenticateAdmin, async (req, res) => {
         dayTotal += amountUSD;
         totalCost += amountUSD;
 
-        // token_type puede ser: uncached_input_tokens, cached_input_tokens, output_tokens, o null (web_search, etc)
-        if (tokenType.includes('input_tokens')) {
+        // token_type: uncached_input_tokens, cached_input_tokens, cache_creation_input_tokens, output_tokens
+        if (tokenType === 'cached_input_tokens') {
+          cacheReadCost += amountUSD;
+          inputCost += amountUSD;
+          dayInput += amountUSD;
+        } else if (tokenType === 'cache_creation_input_tokens') {
+          cacheWriteCost += amountUSD;
+          inputCost += amountUSD;
+          dayInput += amountUSD;
+        } else if (tokenType.includes('input_tokens')) {
           inputCost += amountUSD;
           dayInput += amountUSD;
         } else if (tokenType === 'output_tokens') {
           outputCost += amountUSD;
           dayOutput += amountUSD;
         } else {
-          // Otros costos (web_search, etc)
+          // Otros costos (web_search, etc) - no debería llegar aquí si filtramos por modelo
           otherCost += amountUSD;
           dayOther += amountUSD;
         }
@@ -4310,10 +4335,6 @@ app.get('/api/admin/costs/anthropic', authenticateAdmin, async (req, res) => {
       }
     });
 
-    // Paginación si hay más datos
-    const hasMore = response.data?.has_more || false;
-    const nextPage = response.data?.next_page || null;
-
     res.json({
       period: {
         start: start.toISOString().split('T')[0],
@@ -4325,6 +4346,8 @@ app.get('/api/admin/costs/anthropic', authenticateAdmin, async (req, res) => {
         totalCost: Math.round(totalCost * 100) / 100,
         inputCost: Math.round(inputCost * 100) / 100,
         outputCost: Math.round(outputCost * 100) / 100,
+        cacheReadCost: Math.round(cacheReadCost * 100) / 100,
+        cacheWriteCost: Math.round(cacheWriteCost * 100) / 100,
         otherCost: Math.round(otherCost * 100) / 100,
         currency: 'USD',
         scope: modelFilter === 'all' ? 'organization' : `model:${targetModel}`
@@ -4335,9 +4358,8 @@ app.get('/api/admin/costs/anthropic', authenticateAdmin, async (req, res) => {
       },
       dailyCosts,
       pagination: {
-        hasMore,
-        nextPage,
-        bucketsReturned: buckets.length
+        pagesLoaded: pageCount,
+        totalBuckets: allBuckets.length
       },
       note: modelFilter === 'all'
         ? 'Showing costs for ENTIRE organization. Use ?model=haiku for ordenate-prod costs only.'
