@@ -4274,7 +4274,9 @@ app.get('/api/admin/costs/anthropic', authenticateAdmin, async (req, res) => {
 
       results.forEach(result => {
         // Filtrar por modelo si se especificó
-        if (targetModel && result.model && result.model !== targetModel) {
+        // Si targetModel está definido, solo incluir resultados que coincidan exactamente
+        // Esto excluye web_search y otros costos con model: null
+        if (targetModel && result.model !== targetModel) {
           return; // Skip este resultado
         }
 
