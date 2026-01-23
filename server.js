@@ -4295,8 +4295,8 @@ app.get('/api/admin/costs/anthropic', authenticateAdmin, async (req, res) => {
           return; // Skip este resultado
         }
 
-        // El amount ya viene en USD (ej: "183.369")
-        const amountUSD = parseFloat(result.amount || 0);
+        // El amount viene en centavos, dividir por 100 para obtener USD
+        const amountUSD = parseFloat(result.amount || 0) / 100;
         const tokenType = result.token_type || '';
 
         dayTotal += amountUSD;
