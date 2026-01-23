@@ -496,13 +496,6 @@
     function renderCosts(data) {
       const grid = document.getElementById('costsGrid');
 
-      // Helper para formatear tokens
-      const formatTokens = (tokens) => {
-        if (tokens >= 1000000) return (tokens / 1000000).toFixed(2) + 'M';
-        if (tokens >= 1000) return (tokens / 1000).toFixed(1) + 'K';
-        return tokens;
-      };
-
       grid.innerHTML = `
         <div class="cost-card">
           <h3>Claude API (Anthropic)</h3>
@@ -512,17 +505,22 @@
               <span>${data.anthropic.period?.start || '-'} a ${data.anthropic.period?.end || '-'}</span>
             </div>
             <div class="cost-item">
-              <span>Tokens Input</span>
-              <span>${formatTokens(data.anthropic.summary?.totalInputTokens || 0)}</span>
+              <span>Modelo</span>
+              <span>${data.anthropic.summary?.model || 'Haiku'}</span>
             </div>
             <div class="cost-item">
-              <span>Tokens Output</span>
-              <span>${formatTokens(data.anthropic.summary?.totalOutputTokens || 0)}</span>
+              <span>Costo Input</span>
+              <span>$${(data.anthropic.summary?.inputCost || 0).toFixed(3)} USD</span>
+            </div>
+            <div class="cost-item">
+              <span>Costo Output</span>
+              <span>$${(data.anthropic.summary?.outputCost || 0).toFixed(3)} USD</span>
             </div>
             <div class="cost-item" style="font-weight: bold; border-top: 1px solid #eee; padding-top: 8px; margin-top: 8px;">
-              <span>Costo Estimado</span>
+              <span>Costo Total</span>
               <span>$${(data.anthropic.summary?.totalCost || 0).toFixed(2)} USD</span>
             </div>
+            <p style="color:#7f8c8d; font-size: 12px; margin-top: 10px;">${data.anthropic.note || ''}</p>
           `}
         </div>
 
@@ -549,30 +547,22 @@
           ${data.railway.error ? `<p style="color:#e74c3c">${data.railway.error}</p>` : `
             <div class="cost-item">
               <span>Proyecto</span>
-              <span>${data.railway.project?.name || '-'}</span>
+              <span>${data.railway.project || '-'}</span>
             </div>
             <div class="cost-item">
               <span>Servicios</span>
-              <span>${data.railway.project?.services?.edges?.length || 0}</span>
+              <span>${data.railway.services?.length || 0}</span>
             </div>
-            ${data.railway.account?.creditBalance !== undefined ? `
-              <div class="cost-item">
-                <span>Crédito Disponible</span>
-                <span>$${(data.railway.account.creditBalance / 100).toFixed(2)} USD</span>
+            ${data.railway.services?.map(svc => `
+              <div class="cost-item" style="font-size: 13px; color: #555;">
+                <span>${svc.name}</span>
+                <span>$${(svc.cost || 0).toFixed(2)}</span>
               </div>
-            ` : ''}
-            ${data.railway.account?.usageLimit !== undefined && data.railway.account.usageLimit > 0 ? `
-              <div class="cost-item">
-                <span>Límite de Uso</span>
-                <span>$${(data.railway.account.usageLimit / 100).toFixed(2)} USD</span>
-              </div>
-            ` : ''}
-            ${data.railway.account?.billingPeriodEnd ? `
-              <div class="cost-item">
-                <span>Fin Periodo</span>
-                <span>${new Date(data.railway.account.billingPeriodEnd).toLocaleDateString('es-CL')}</span>
-              </div>
-            ` : ''}
+            `).join('') || ''}
+            <div class="cost-item" style="font-weight: bold; border-top: 1px solid #eee; padding-top: 8px; margin-top: 8px;">
+              <span>Costo Estimado</span>
+              <span>$${(data.railway.summary?.totalCost || 0).toFixed(2)} USD</span>
+            </div>
             <p style="color:#7f8c8d; font-size: 12px; margin-top: 10px;">${data.railway.note || ''}</p>
           `}
         </div>

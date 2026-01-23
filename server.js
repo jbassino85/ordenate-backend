@@ -4190,18 +4190,17 @@ app.get('/api/admin/costs/anthropic', authenticateAdmin, async (req, res) => {
 
         // Solo contar costos de Haiku (ignorar Opus, Sonnet, Web Search, etc.)
         if (model.includes('haiku')) {
-          // El amount viene en centavos, convertir a dólares
-          const amountCents = parseFloat(result.amount || 0);
-          const amountUSD = amountCents / 100;
+          // El amount ya viene en dólares (no en centavos)
+          const amount = parseFloat(result.amount || 0);
 
-          dayTotal += amountUSD;
-          totalCost += amountUSD;
+          dayTotal += amount;
+          totalCost += amount;
 
           // Separar input vs output basado en token_type
           if (tokenType.includes('input')) {
-            inputCost += amountUSD;
+            inputCost += amount;
           } else if (tokenType === 'output_tokens') {
-            outputCost += amountUSD;
+            outputCost += amount;
           }
         }
       });
